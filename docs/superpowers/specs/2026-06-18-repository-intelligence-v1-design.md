@@ -24,9 +24,9 @@ processes.
 ## Retrieval
 
 `rag/retriever.py` tokenizes failure text into lowercase identifier-like terms,
-removes common diagnostic noise, and ranks chunks by term frequency. Matches in
-the file path receive extra weight so traceback paths outrank incidental code
-matches. Only positive-score chunks are returned. Ties are deterministic by
+removes common diagnostic noise, and ranks chunks by term frequency. An exact
+traceback path match receives a fixed bonus so it outranks incidental code
+mentions; other file-path terms receive extra weight. Only positive-score chunks are returned. Ties are deterministic by
 file path and line range. The default and integration limit is five chunks.
 
 This keyword scorer is the required fallback when BGE-M3 and Qdrant are absent.
@@ -38,9 +38,10 @@ needed for a working prototype.
 
 `rag/context_builder.py` removes duplicate `(file, lines, content)` entries and
 formats each block as `FILE: path (lines start-end)` followed by code. The
-builder uses an 1,800-token content budget, leaving margin below the required
-2,000-token ceiling. It includes complete chunks when possible and truncates a
-final chunk only on line boundaries.
+builder uses an 1,800-token budget estimated conservatively from both whitespace
+tokens and character count, leaving margin below the required 2,000-token
+ceiling. It includes complete chunks when possible and truncates a final chunk
+only on line boundaries.
 
 ## Patch Integration
 
