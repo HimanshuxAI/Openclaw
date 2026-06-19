@@ -1,191 +1,204 @@
 # OpenClaw
 
-> Phase 1: Building the foundation for a persistent AI software engineer.
+Run pytest. Apply a validated patch. Repeat until the tests pass.
 
----
+OpenClaw is an early test-fixing prototype for Python repositories. It runs a
+small, bounded repair loop and leaves every applied change visible in Git.
 
-# Problem Statement
+## What It Does
 
-Current AI coding assistants have a fundamental limitation.
+- Loads an existing Git repository or clones one from a URL.
+- Resets the target to a clean `HEAD` before each run.
+- Runs the repository's pytest suite and captures failures.
+- Retrieves small, relevant Python source chunks for each failure.
+- Accepts a unified diff from the current mock patch generator.
+- Rejects unsafe or malformed patches before they touch the repository.
+- Applies valid patches and reruns pytest.
+- Stops when tests pass, a patch fails validation, or five attempts are used.
 
-They generate code, but they do not truly work on software projects.
+## Demo
 
-Common failure modes:
+Start with a real failure:
 
-- They forget previous sessions.
-- They cannot maintain long-term project context.
-- They have limited understanding of large repositories.
-- They rely on the user to provide the same information repeatedly.
-- They do not plan complex engineering tasks.
-- They cannot reliably execute development workflows.
-
-As projects grow, these limitations become bottlenecks.
-
-The objective of OpenClaw is to solve this problem by creating an AI system that can understand, remember, and operate on real codebases over time.
-
----
-
-# Objective
-
-Build a persistent AI software engineer that can:
-
-- Understand repositories
-- Remember previous work
-- Plan multi-step tasks
-- Use development tools
-- Continue projects across sessions
-
----
-
-# Phase 1 Scope
-
-Phase 1 focuses on building the core infrastructure.
-
-## Goals
-
-- [ ] NVIDIA API integration
-- [ ] FastAPI backend
-- [ ] Basic conversation engine
-- [ ] Memory architecture
-- [ ] Initial project structure
-
-Phase 1 is not intended to be a fully autonomous coding agent.
-
-Its purpose is to establish the foundation for future development.
-
----
-
-# High Level Architecture
-
-```text
-User
-  |
-  v
-Memory
-  |
-  v
-Planner
-  |
-  v
-Repository Context
-  |
-  v
-Tool Executor
-  |
-  v
-NVIDIA Nemotron
-  |
-  v
-Response
+```python
+# calculator.py
+def add(left, right):
+    return left - right
 ```
 
----
+```python
+# test_calculator.py
+from calculator import add
 
-# Long-Term Vision
+PATCH = """diff --git a/calculator.py b/calculator.py
+--- a/calculator.py
++++ b/calculator.py
+@@ -1,2 +1,2 @@
+ def add(left, right):
+-    return left - right
++    return left + right
+"""
 
-A user should eventually be able to write:
 
-```text
-Continue my SaaS project.
-Finish the authentication module.
-Run the tests.
-Fix any failures.
-Commit the changes.
+def test_add():
+    if add(2, 3) != 5:
+        print("OPENCLAW_PATCH_START")
+        print(PATCH)
+        print("OPENCLAW_PATCH_END")
+    assert add(2, 3) == 5
 ```
 
-The system should execute that workflow with minimal guidance.
+```console
+$ python3 -m pytest -q
+F                                                                        [100%]
+=================================== FAILURES ===================================
+___________________________________ test_add ___________________________________
 
----
+>       assert add(2, 3) == 5
+E       assert -1 == 5
 
-# Planned Components
-
-## Memory
-
-Store:
-
-- User preferences
-- Project summaries
-- Previous decisions
-- Important context
-
-## Repository Intelligence
-
-- Code indexing
-- Context retrieval
-- Semantic search
-
-## Planning
-
-Convert high-level goals into executable tasks.
-
-## Tool Use
-
-- File operations
-- Terminal execution
-- Git integration
-- GitHub integration
-
----
-
-# Technology Stack
-
-| Layer | Technology |
-|--------|-------------|
-| LLM | NVIDIA Nemotron |
-| Backend | FastAPI |
-| Memory | Supabase |
-| Vector Database | Qdrant |
-| Embeddings | BGE-M3 |
-| Language | Python |
-
----
-
-# Project Structure
-
-```text
-openclaw/
-├── app/
-├── api/
-├── memory/
-├── rag/
-├── planner/
-├── tools/
-├── tests/
-└── docs/
+1 failed in 0.04s
 ```
 
----
+In the current mock mode, the failing test emits a candidate diff between
+`OPENCLAW_PATCH_START` and `OPENCLAW_PATCH_END`. OpenClaw validates that diff,
+applies it, and tests again:
 
-# Development Roadmap
+```console
+$ python3 main.py --repo /tmp/openclaw-demo
+[openclaw] Resetting repository before run: /tmp/openclaw-demo
+[openclaw] Fix attempt 1/5
+[openclaw] SUCCESS: tests pass
 
-## Phase 1
+$ git -C /tmp/openclaw-demo diff -- calculator.py
+diff --git a/calculator.py b/calculator.py
+--- a/calculator.py
++++ b/calculator.py
+@@ -1,2 +1,2 @@
+ def add(left, right):
+-    return left - right
++    return left + right
 
-- [ ] Basic infrastructure
-- [ ] NVIDIA integration
-- [ ] Memory foundation
+$ cd /tmp/openclaw-demo && python3 -m pytest -q
+.                                                                        [100%]
+1 passed in 0.03s
+```
 
-## Phase 2
+The repair is an ordinary unstaged Git diff. Review it, keep it, or discard it.
 
-- [ ] Repository indexing
-- [ ] Vector search
-- [ ] Tool execution
+## Why This Matters
 
-## Phase 3
+Most coding tools stop after suggesting code. The developer still has to run
+tests, interpret the failure, apply the edit, and verify the result.
 
-- [ ] Planning engine
-- [ ] Autonomous workflows
-- [ ] VS Code integration
+OpenClaw tests one narrower idea: make that feedback loop executable,
+inspectable, and bounded.
 
----
+## How It Works
 
-# Status
+```text
+run pytest
+    ↓
+extract the failure
+    ↓
+retrieve relevant Python code
+    ↓
+request a unified diff
+    ↓
+validate and apply the patch
+    ↓
+run pytest again
+```
 
-This repository represents the first phase of the project.
+The loop performs at most five fix attempts. It stops immediately when there is
+no patch or when patch validation fails.
 
-The immediate goal is to build a robust foundation before adding advanced autonomous capabilities.
+## Quick Start
 
----
+Requirements: Python 3.9+, Git, and pytest.
 
-# License
+From the OpenClaw checkout:
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+python3 -m pip install pytest
+python3 -m pytest -q
+```
+
+Before running OpenClaw on a target, commit or back up its work. OpenClaw runs
+`git reset --hard HEAD` and `git clean -fd`. This discards tracked changes and
+non-ignored untracked files in the target repository.
+
+Run against a local repository:
+
+```bash
+python3 main.py --repo /absolute/path/to/clean-target-repository
+```
+
+Or clone a repository into a new directory first:
+
+```bash
+python3 main.py \
+  --url https://example.com/owner/project.git \
+  --clone-path /tmp/project-openclaw
+```
+
+Successful fixes currently require pytest failure output containing an explicit
+mock patch block:
+
+```text
+OPENCLAW_PATCH_START
+diff --git a/module.py b/module.py
+--- a/module.py
++++ b/module.py
+@@ -1 +1 @@
+-old_code()
++fixed_code()
+OPENCLAW_PATCH_END
+```
+
+Without that block, OpenClaw stops safely without editing the repository.
+
+## Project Structure
+
+```text
+main.py                 CLI and repository setup
+repo_manager.py         Clone, load, and reset Git repositories
+test_runner.py          Run pytest and capture its result
+agent_loop.py           Bounded test → patch → retest loop
+patcher.py              Mock generation and safe diff application
+utils.py                Failure extraction and console output
+rag/indexer.py          Chunk Python source files
+rag/retriever.py        Rank chunks against a test failure
+rag/context_builder.py  Build small, deduplicated code context
+tests/                  Unit and end-to-end coverage
+```
+
+## Current Limitations
+
+- Patch generation is mocked. No real language model is connected yet.
+- Successful mock fixes require an explicit unified diff in pytest output.
+- Only pytest is supported.
+- Repository retrieval indexes Python files only.
+- Tests execute locally with the current user's permissions. There is no
+  sandbox.
+- Repository state is not remembered between runs.
+- OpenClaw is not fully autonomous or production-ready.
+
+## Roadmap
+
+1. Connect a real model to failure output and retrieved code context.
+2. Improve retrieval quality without expanding prompt size.
+3. Isolate test execution and support additional test runners.
+
+## Philosophy
+
+- Tight loops over broad plans.
+- Deterministic limits over open-ended execution.
+- Small, reviewable diffs over file rewrites.
+- Stop safely when evidence is missing.
+
+## License
 
 MIT
