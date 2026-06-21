@@ -3,6 +3,18 @@ import subprocess
 import pytest
 
 
+@pytest.fixture(autouse=True)
+def memory_path(tmp_path, monkeypatch):
+    path = tmp_path / "openclaw-memory.json"
+    monkeypatch.setenv("OPENCLAW_MEMORY_PATH", str(path))
+    return path
+
+
+@pytest.fixture(autouse=True)
+def disable_live_nvidia_api(monkeypatch):
+    monkeypatch.delenv("NVIDIA_API_KEY", raising=False)
+
+
 @pytest.fixture
 def git_repo(tmp_path):
     repo = tmp_path / "repo"
