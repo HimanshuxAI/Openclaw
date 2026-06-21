@@ -1,0 +1,109 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="color-scheme" content="light">
+    <meta name="description" content="A local interface for the OpenClaw test-fixing loop.">
+    <title>OpenClaw — Local test repair</title>
+    <link rel="stylesheet" href="/styles.css">
+  </head>
+  <body>
+    <header class="site-header">
+      <a class="brand" href="/" aria-label="OpenClaw home">
+        <span class="brand-mark" aria-hidden="true">O</span>
+        <span>OpenClaw</span>
+      </a>
+      <div class="local-status">
+        <span class="status-dot" aria-hidden="true"></span>
+        Local prototype
+      </div>
+    </header>
+
+    <main>
+      <section class="hero" aria-labelledby="hero-title">
+        <p class="eyebrow">Test repair, on your machine</p>
+        <h1 id="hero-title">Fix failing tests.<br>Keep the diff.</h1>
+        <p class="hero-copy">
+          Point OpenClaw at a clean Python repository. It runs pytest, applies
+          validated patches, and stops after five attempts.
+        </p>
+      </section>
+
+      <section class="workspace" aria-label="Run OpenClaw">
+        <div class="action-panel">
+          <div class="panel-heading">
+            <p class="step-label">01 / Repository</p>
+            <h2>Choose a Git repository</h2>
+          </div>
+
+          <form id="run-form" novalidate>
+            <label for="repo-path">Local path or HTTPS Git URL</label>
+            <input
+              id="repo-path"
+              name="repo"
+              type="text"
+              placeholder="https://github.com/owner/repository"
+              autocomplete="off"
+              spellcheck="false"
+              required
+            >
+
+            <div class="reset-warning" role="note">
+              <span class="warning-icon" aria-hidden="true">!</span>
+              <p>
+                <strong>This resets the target first.</strong>
+                OpenClaw runs <code>git reset --hard HEAD</code> and
+                <code>git clean -fd</code>. Commit or back up your work.
+              </p>
+            </div>
+
+            <button id="run-button" type="submit">
+              <span>Run OpenClaw</span>
+              <span aria-hidden="true">↗</span>
+            </button>
+          </form>
+        </div>
+
+        <section class="output-panel" aria-labelledby="output-title">
+          <div class="output-header">
+            <div>
+              <p class="step-label">02 / Result</p>
+              <h2 id="output-title">Agent output</h2>
+            </div>
+            <p id="run-status" class="run-status" data-state="idle" tabindex="-1" aria-live="polite">
+              Ready
+            </p>
+          </div>
+          <pre id="run-output" aria-label="OpenClaw command output">Waiting for a repository.</pre>
+          <p class="output-note">Runs synchronously on this machine. Keep this tab open.</p>
+        </section>
+      </section>
+
+      <section class="capabilities" aria-label="Current guarantees">
+        <article>
+          <p class="capability-number">01</p>
+          <h2>Validated patches</h2>
+          <p>Every remembered or generated diff passes the same safety checks before application.</p>
+        </article>
+        <article>
+          <p class="capability-number">02</p>
+          <h2>Five attempts</h2>
+          <p>The loop is bounded. It stops on success, unsafe output, or an exhausted attempt limit.</p>
+        </article>
+        <article>
+          <p class="capability-number">03</p>
+          <h2>Local memory</h2>
+          <p>Only structured failure and patch outcomes persist. Repository context does not.</p>
+        </article>
+      </section>
+    </main>
+
+    <footer>
+      <span>OpenClaw</span>
+      <span>pytest only · local execution · early prototype</span>
+    </footer>
+
+    <script src="/app.js" defer></script>
+  </body>
+</html>
