@@ -56,6 +56,30 @@ def test_generate_patch_passes_failure_and_relevant_context_to_llm(
     assert "health.py" not in received["context"]
 
 
+def test_generate_patch_prefers_configured_nvidia_model(monkeypatch, git_repo):
+    monkeypatch.setenv("NVIDIA_API_KEY", "test-key")
+    monkeypatch.setattr(
+        patcher, "generate_nvidia_patch", lambda failure, context: VALID_PATCH
+    )
+    monkeypatch.setattr(
+        patcher,
+        "mock_llm_fix",
+        lambda failure, context: (_ for _ in ()).throw(AssertionError("mock called")),
+    )
+
+    assert generate_patch("AssertionError", git_repo) == VALID_PATCH
+
+
+def test_generate_patch_falls_back_to_mock_when_model_returns_no_diff(
+    monkeypatch, git_repo
+):
+    monkeypatch.setenv("NVIDIA_API_KEY", "test-key")
+    monkeypatch.setattr(patcher, "generate_nvidia_patch", lambda failure, context: "")
+    failure = "OPENCLAW_PATCH_START\n" + VALID_PATCH + "OPENCLAW_PATCH_END\n"
+
+    assert generate_patch(failure, git_repo) == VALID_PATCH
+
+
 def test_apply_patch_modifies_existing_regular_file(git_repo):
     assert apply_patch(git_repo, VALID_PATCH) is True
     assert (git_repo / "tracked.txt").read_text(encoding="utf-8") == "fixed\n"

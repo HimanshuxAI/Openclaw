@@ -1,4 +1,5 @@
 from pathlib import Path, PurePosixPath
+import os
 import re
 import shlex
 import subprocess
@@ -6,6 +7,7 @@ import subprocess
 from rag.context_builder import build_context
 from rag.indexer import index_repo
 from rag.retriever import retrieve_context
+from llm_client import generate_nvidia_patch
 from repo_manager import load_local_repo
 
 
@@ -30,6 +32,10 @@ def generate_patch(failure_output, repo_path):
         code_context = build_context(chunks)
     except (OSError, ValueError):
         code_context = ""
+    if os.environ.get("NVIDIA_API_KEY", "").strip():
+        model_patch = generate_nvidia_patch(failure_output, code_context)
+        if model_patch:
+            return model_patch
     return mock_llm_fix(failure_output, code_context)
 
 
