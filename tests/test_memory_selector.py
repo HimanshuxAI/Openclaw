@@ -1,4 +1,4 @@
-from memory.selector import find_similar_cases
+from memory.selector import REPLAY_THRESHOLD, find_similar_cases, similarity_score
 
 
 def _case(
@@ -29,7 +29,14 @@ def test_find_similar_cases_weights_same_error_and_file_highest():
         [same_file, same_error, exact],
     )
 
-    assert [match["patch"] for match in matches] == ["exact", "same-error", "same-file"]
+    assert [match["record"]["patch"] for match in matches] == [
+        "exact",
+        "same-error",
+        "same-file",
+    ]
+    assert matches[0]["score"] == 1.0
+    assert matches[0]["record"] == exact
+    assert "score" not in exact
 
 
 def test_find_similar_cases_uses_message_similarity_within_same_type():
@@ -38,7 +45,7 @@ def test_find_similar_cases_uses_message_similarity_within_same_type():
 
     matches = find_similar_cases("NameError: name 'user' is not defined", [distant, close])
 
-    assert matches[0]["patch"] == "close"
+    assert matches[0]["record"]["patch"] == "close"
 
 
 def test_find_similar_cases_prefers_newest_record_for_equal_scores():
@@ -50,7 +57,7 @@ def test_find_similar_cases_prefers_newest_record_for_equal_scores():
         [older, newer],
     )
 
-    assert [match["patch"] for match in matches] == ["newer", "older"]
+    assert [match["record"]["patch"] for match in matches] == ["newer", "older"]
 
 
 def test_find_similar_cases_returns_at_most_three_positive_matches():
@@ -60,3 +67,27 @@ def test_find_similar_cases_returns_at_most_three_positive_matches():
 
     assert len(matches) == 3
     assert find_similar_cases("SyntaxError: completely unrelated", [_case()]) == []
+
+
+def test_similarity_score_allows_normalized_numeric_variation_to_replay():
+    case = _case(
+        error_type="AssertionError",
+        message="expected <number> but received <number>",
+        file="tests/test_total.py",
+    )
+    failure = "tests/test_total.py:8: AssertionError: expected 5 but received 4"
+
+    assert REPLAY_THRESHOLD == 0.88
+    assert similarity_score(failure, case) >= REPLAY_THRESHOLD
+
+
+def test_similarity_score_gives_basename_match_less_weight_than_full_path():
+    case = _case(file="tests/unit/test_auth.py")
+    full = similarity_score(
+        "tests/unit/test_auth.py:3: NameError: name 'user' is not defined", case
+    )
+    basename = similarity_score(
+        "other/test_auth.py:3: NameError: name 'user' is not defined", case
+    )
+
+    assert basename < full

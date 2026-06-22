@@ -112,6 +112,57 @@ def test_run_agent_reuses_exact_success_without_generation(monkeypatch, tmp_path
     assert applied == ["remembered-patch"]
 
 
+def test_run_agent_reuses_fuzzy_high_confidence_success(monkeypatch, tmp_path):
+    save_memory([_record("remembered-patch", True)])
+    fuzzy_failure = {
+        "passed": False,
+        "output": "FAILED tests/test_math.py::test_add\nE AssertionError: expected 8",
+        "errors": "",
+    }
+    results = iter([fuzzy_failure, {"passed": True, "output": "passed", "errors": ""}])
+    applied = []
+    monkeypatch.setattr(agent_loop.test_runner, "run_tests", lambda path: next(results))
+    monkeypatch.setattr(
+        agent_loop.patcher,
+        "generate_patch",
+        lambda failure, path: (_ for _ in ()).throw(AssertionError("generator called")),
+    )
+    monkeypatch.setattr(
+        agent_loop.patcher,
+        "apply_patch",
+        lambda path, patch: applied.append(patch) or True,
+    )
+
+    assert agent_loop.run_agent(tmp_path) is True
+    assert applied == ["remembered-patch"]
+
+
+def test_run_agent_does_not_replay_when_similarity_is_below_threshold(
+    monkeypatch, tmp_path
+):
+    save_memory(
+        [
+            _record("weak-patch", True)
+            | {
+                "error_message": "a completely different assertion",
+                "file": "other/test_math.py",
+            }
+        ]
+    )
+    results = iter([FAILURE, {"passed": True, "output": "passed", "errors": ""}])
+    applied = []
+    monkeypatch.setattr(agent_loop.test_runner, "run_tests", lambda path: next(results))
+    monkeypatch.setattr(agent_loop.patcher, "generate_patch", lambda failure, path: "fresh")
+    monkeypatch.setattr(
+        agent_loop.patcher,
+        "apply_patch",
+        lambda path, patch: applied.append(patch) or True,
+    )
+
+    assert agent_loop.run_agent(tmp_path) is True
+    assert applied == ["fresh"]
+
+
 def test_run_agent_does_not_repeat_a_patch_that_later_failed(monkeypatch, tmp_path):
     save_memory(
         [
