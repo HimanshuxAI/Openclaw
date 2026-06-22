@@ -44,7 +44,9 @@ def test_add():
     monkeypatch.setattr(
         agent_loop.patcher,
         "generate_patch",
-        lambda failure, path: (_ for _ in ()).throw(AssertionError("generator called")),
+        lambda failure, path, **kwargs: (_ for _ in ()).throw(
+            AssertionError("generator called")
+        ),
     )
 
     assert agent_loop.run_agent(git_repo) is True

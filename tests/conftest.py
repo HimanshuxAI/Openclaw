@@ -29,6 +29,9 @@ def git_repo(tmp_path):
         check=True,
     )
     (repo / "tracked.txt").write_text("original\n", encoding="utf-8")
-    subprocess.run(["git", "-C", str(repo), "add", "tracked.txt"], check=True)
+    (repo / "module.py").write_text("VALUE = 'original'\n", encoding="utf-8")
+    subprocess.run(
+        ["git", "-C", str(repo), "add", "tracked.txt", "module.py"], check=True
+    )
     subprocess.run(["git", "-C", str(repo), "commit", "-qm", "initial"], check=True)
     return repo

@@ -6,12 +6,12 @@ import patcher
 from patcher import apply_patch, generate_patch, mock_llm_fix
 
 
-VALID_PATCH = """diff --git a/tracked.txt b/tracked.txt
---- a/tracked.txt
-+++ b/tracked.txt
+VALID_PATCH = """diff --git a/module.py b/module.py
+--- a/module.py
++++ b/module.py
 @@ -1 +1 @@
--original
-+fixed
+-VALUE = 'original'
++VALUE = 'fixed'
 """
 
 
@@ -70,6 +70,18 @@ def test_generate_patch_prefers_configured_nvidia_model(monkeypatch, git_repo):
     assert generate_patch("AssertionError", git_repo) == VALID_PATCH
 
 
+def test_generate_patch_reports_context_tokens_and_model_calls(monkeypatch, git_repo):
+    monkeypatch.setenv("NVIDIA_API_KEY", "test-key")
+    monkeypatch.setattr(
+        patcher, "generate_nvidia_patch", lambda failure, context: VALID_PATCH
+    )
+    metrics = {}
+
+    assert generate_patch("AssertionError", git_repo, metrics=metrics) == VALID_PATCH
+    assert metrics["model_calls"] == 1
+    assert 0 <= metrics["context_tokens"] < 2000
+
+
 def test_generate_patch_falls_back_to_mock_when_model_returns_no_diff(
     monkeypatch, git_repo
 ):
@@ -82,7 +94,7 @@ def test_generate_patch_falls_back_to_mock_when_model_returns_no_diff(
 
 def test_apply_patch_modifies_existing_regular_file(git_repo):
     assert apply_patch(git_repo, VALID_PATCH) is True
-    assert (git_repo / "tracked.txt").read_text(encoding="utf-8") == "fixed\n"
+    assert (git_repo / "module.py").read_text(encoding="utf-8") == "VALUE = 'fixed'\n"
 
 
 @pytest.mark.parametrize(
@@ -147,7 +159,95 @@ def test_apply_patch_rejects_symlink_target(git_repo):
 
 
 def test_apply_patch_rejects_inapplicable_patch_without_changes(git_repo):
-    patch = VALID_PATCH.replace("-original", "-missing")
+    patch = VALID_PATCH.replace("-VALUE = 'original'", "-VALUE = 'missing'")
 
     assert apply_patch(git_repo, patch) is False
-    assert (git_repo / "tracked.txt").read_text(encoding="utf-8") == "original\n"
+    assert (git_repo / "module.py").read_text(encoding="utf-8") == "VALUE = 'original'\n"
+
+
+def test_apply_patch_rejects_multiple_hunks(git_repo):
+    (git_repo / "multi.py").write_text(
+        "FIRST = 1\nMIDDLE = 2\nLAST = 3\n", encoding="utf-8"
+    )
+    subprocess.run(["git", "-C", str(git_repo), "add", "multi.py"], check=True)
+    subprocess.run(["git", "-C", str(git_repo), "commit", "-qm", "add multi"], check=True)
+    patch = """diff --git a/multi.py b/multi.py
+--- a/multi.py
++++ b/multi.py
+@@ -1 +1 @@
+-FIRST = 1
++FIRST = 10
+@@ -3 +3 @@
+-LAST = 3
++LAST = 30
+"""
+
+    assert apply_patch(git_repo, patch) is False
+    assert (git_repo / "multi.py").read_text(encoding="utf-8") == (
+        "FIRST = 1\nMIDDLE = 2\nLAST = 3\n"
+    )
+
+
+def test_apply_patch_rejects_test_file_changes(git_repo):
+    tests = git_repo / "tests"
+    tests.mkdir()
+    target = tests / "test_module.py"
+    target.write_text("def test_value():\n    assert False\n", encoding="utf-8")
+    subprocess.run(["git", "-C", str(git_repo), "add", str(target)], check=True)
+    subprocess.run(["git", "-C", str(git_repo), "commit", "-qm", "add test"], check=True)
+    patch = """diff --git a/tests/test_module.py b/tests/test_module.py
+--- a/tests/test_module.py
++++ b/tests/test_module.py
+@@ -1,2 +1,2 @@
+ def test_value():
+-    assert False
++    assert True
+"""
+
+    assert apply_patch(git_repo, patch) is False
+    assert "assert False" in target.read_text(encoding="utf-8")
+
+
+def test_apply_patch_rejects_syntax_error_without_changing_checkout(git_repo):
+    patch = """diff --git a/module.py b/module.py
+--- a/module.py
++++ b/module.py
+@@ -1 +1 @@
+-VALUE = 'original'
++VALUE =
+"""
+
+    assert apply_patch(git_repo, patch) is False
+    assert (git_repo / "module.py").read_text(encoding="utf-8") == "VALUE = 'original'\n"
+
+
+def test_apply_patch_rejects_new_unresolved_import(git_repo):
+    patch = """diff --git a/module.py b/module.py
+--- a/module.py
++++ b/module.py
+@@ -1 +1,2 @@
++import openclaw_package_that_does_not_exist
+ VALUE = 'original'
+"""
+
+    assert apply_patch(git_repo, patch) is False
+    assert (git_repo / "module.py").read_text(encoding="utf-8") == "VALUE = 'original'\n"
+
+
+def test_apply_patch_cleans_up_temporary_worktree(git_repo):
+    before = subprocess.run(
+        ["git", "-C", str(git_repo), "worktree", "list", "--porcelain"],
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout
+
+    assert apply_patch(git_repo, VALID_PATCH) is True
+
+    after = subprocess.run(
+        ["git", "-C", str(git_repo), "worktree", "list", "--porcelain"],
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout
+    assert after == before

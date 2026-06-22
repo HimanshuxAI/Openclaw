@@ -10,11 +10,11 @@ small, bounded repair loop and leaves every applied change visible in Git.
 - Loads an existing Git repository or clones one from a URL.
 - Resets the target to a clean `HEAD` before each run.
 - Runs the repository's pytest suite and captures failures.
-- Retrieves small, relevant Python source chunks for each failure.
-- Reuses an exact successful fix from bounded local memory when available.
+- Routes each failure type to small function, method, test, or import scopes.
+- Reuses a similar successful fix only above a strict confidence threshold.
 - Requests a unified diff from NVIDIA Nemotron when configured.
 - Retains the explicit marker patch as an offline fallback.
-- Rejects unsafe or malformed patches before they touch the repository.
+- Preflights one-file, one-hunk Python patches before they touch the repository.
 - Applies valid patches and reruns pytest.
 - Stops when tests pass, a patch fails validation, or five attempts are used.
 
@@ -71,6 +71,7 @@ $ python3 main.py --repo /tmp/openclaw-demo
 [openclaw] Resetting repository before run: /tmp/openclaw-demo
 [openclaw] Fix attempt 1/5
 [openclaw] SUCCESS: tests pass
+[openclaw] METRICS: attempts=1 model_calls=0 memory_replays=0 context_tokens=124 elapsed_ms=418 passed=true
 
 $ git -C /tmp/openclaw-demo diff -- calculator.py
 diff --git a/calculator.py b/calculator.py
@@ -103,9 +104,9 @@ run pytest
     ↓
 extract the failure
     ↓
-check successful past fixes
+classify the failure
     ↓
-retrieve relevant Python code
+replay a high-confidence fix or retrieve relevant scopes
     ↓
 request a unified diff
     ↓
@@ -116,8 +117,9 @@ run pytest again
 record the verified outcome
 ```
 
-The loop performs at most five fix attempts. A remembered patch still passes
-normal validation. If it is stale, OpenClaw records the failure and tries the
+The loop performs at most five fix attempts. Each attempt can change one
+existing non-test Python file with one hunk. A remembered patch still passes
+the full preflight. If it is stale, OpenClaw records the failure and tries the
 current generator once.
 
 ## Quick Start
@@ -199,7 +201,7 @@ diff --git a/module.py b/module.py
 OPENCLAW_PATCH_END
 ```
 
-Without a model diff, that marker block, or an exact successful memory match,
+Without a model diff, that marker block, or a high-confidence memory match,
 OpenClaw stops safely without editing the repository.
 
 ### Local memory
@@ -217,9 +219,10 @@ export OPENCLAW_MEMORY_PATH=/absolute/path/to/openclaw-memory.json
 ```
 
 Memory contains only normalized error details, the referenced file, the patch,
-its verified outcome, and a timestamp. It never stores repository context. A
-successful patch is reused only when error type, normalized message, and file
-all match. A patch that later fails for that case is not repeated.
+its verified outcome, and a timestamp. It never stores repository context.
+Error type, normalized-message similarity, file similarity, and latest outcome
+produce a confidence score. Replay requires at least `0.88`. A patch that later
+fails for a comparable case is not repeated.
 
 ## Project Structure
 
@@ -232,9 +235,10 @@ agent_loop.py           Bounded test → patch → retest loop
 patcher.py              Model routing and safe diff application
 llm_client.py           NVIDIA Nemotron streaming client
 utils.py                Failure extraction and console output
-rag/indexer.py          Chunk Python source files
-rag/retriever.py        Rank chunks against a test failure
-rag/context_builder.py  Build small, deduplicated code context
+rag/indexer.py          Extract AST scopes and shallow dependency edges
+rag/router.py           Classify failures and extract structural evidence
+rag/retriever.py        Apply fixed retrieval routes and stable ranking
+rag/context_builder.py  Enforce the 1,800-token whole-scope budget
 memory/store.py         Persist the latest 100 fix outcomes
 memory/patterns.py      Normalize failure details
 memory/selector.py      Rank and select prior cases
@@ -247,10 +251,15 @@ tests/                  Unit and end-to-end coverage
 - Hosted generation requires a rotated NVIDIA API key and network access.
 - Model output can be missing or invalid; unsafe diffs are rejected and the loop
   stops or uses an available offline fallback.
-- Offline new fixes require an explicit unified diff in pytest output; exact
-  learned fixes can be reused without generating it again.
+- Offline new fixes require an explicit unified diff in pytest output;
+  high-confidence learned fixes can be reused without generating it again.
 - Only pytest is supported.
-- Repository retrieval indexes Python files only.
+- Repository retrieval indexes Python files only. Static call and import edges
+  do not model dynamic dispatch or dynamic imports.
+- Patches cannot create files, edit tests, touch non-Python files, modify more
+  than one file, or contain more than one hunk.
+- Import preflight checks newly introduced absolute imports only. It does not
+  prove runtime import behavior.
 - Tests execute locally with the current user's permissions. There is no
   sandbox.
 - Memory covers structured failure/patch outcomes only. It is not project or
@@ -259,9 +268,9 @@ tests/                  Unit and end-to-end coverage
 
 ## Roadmap
 
-1. Improve retrieval quality without expanding prompt size.
-2. Add model-call diagnostics without storing prompts or reasoning.
-3. Isolate test execution and support additional test runners.
+1. Benchmark route quality and replay thresholds on representative failures.
+2. Isolate test execution from the host user.
+3. Support additional Python test runners without widening repair scope.
 
 ## Philosophy
 
