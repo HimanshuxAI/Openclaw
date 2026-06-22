@@ -9,6 +9,12 @@ from utils import extract_failure, log
 
 
 MAX_STEPS = 5
+PYTEST_STOP_REASONS = {
+    2: "pytest was interrupted",
+    3: "pytest had an internal error",
+    4: "pytest could not run because of a usage error",
+    5: "pytest collected no tests",
+}
 
 
 def _signature(failure):
@@ -86,6 +92,13 @@ def _generated_patch(failure, repo_path, memory, run_metrics):
     return patch
 
 
+def _pytest_stop_reason(result):
+    exit_code = result.get("exit_code", 1)
+    if exit_code in (0, 1):
+        return ""
+    return PYTEST_STOP_REASONS.get(exit_code, f"pytest exited with code {exit_code}")
+
+
 def run_agent(repo_path):
     started_at = time.monotonic()
     metrics = {
@@ -98,6 +111,10 @@ def run_agent(repo_path):
     if result["passed"]:
         log("SUCCESS: tests already pass")
         return _finish(True, metrics, started_at)
+    stop_reason = _pytest_stop_reason(result)
+    if stop_reason:
+        log(f"STOPPED: {stop_reason}")
+        return _finish(False, metrics, started_at)
 
     for step in range(1, MAX_STEPS + 1):
         metrics["attempts"] += 1
@@ -136,6 +153,10 @@ def run_agent(repo_path):
         if result["passed"]:
             log("SUCCESS: tests pass")
             return _finish(True, metrics, started_at)
+        stop_reason = _pytest_stop_reason(result)
+        if stop_reason:
+            log(f"STOPPED: {stop_reason}")
+            return _finish(False, metrics, started_at)
 
     log(f"STOPPED: tests still fail after {MAX_STEPS} fix attempts")
     return _finish(False, metrics, started_at)

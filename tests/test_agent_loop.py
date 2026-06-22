@@ -38,6 +38,33 @@ def test_run_agent_returns_immediately_when_tests_pass(monkeypatch, tmp_path, ca
     assert "passed=true" in output
 
 
+def test_run_agent_stops_before_generation_when_pytest_collects_no_tests(
+    monkeypatch, tmp_path, capsys
+):
+    monkeypatch.setattr(
+        agent_loop.test_runner,
+        "run_tests",
+        lambda path: {
+            "passed": False,
+            "output": "no tests ran in 0.00s",
+            "errors": "",
+            "exit_code": 5,
+        },
+    )
+    monkeypatch.setattr(
+        agent_loop.patcher,
+        "generate_patch",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("generator called")
+        ),
+    )
+
+    assert agent_loop.run_agent(tmp_path) is False
+    output = capsys.readouterr().out
+    assert "STOPPED: pytest collected no tests" in output
+    assert "METRICS: attempts=0 model_calls=0" in output
+
+
 def test_run_agent_stops_when_no_patch_is_generated(monkeypatch, tmp_path):
     monkeypatch.setattr(
         agent_loop.test_runner,
