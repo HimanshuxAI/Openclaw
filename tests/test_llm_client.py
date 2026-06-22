@@ -96,6 +96,8 @@ def test_generate_nvidia_patch_configures_stream_and_ignores_reasoning(
     prompt = request["messages"][-1]["content"]
     assert "FAILED test_module.py" in prompt
     assert "FILE: module.py" in prompt
+    assert "exactly one existing non-test Python file" in prompt
+    assert "exactly one diff hunk" in prompt
     assert "private reasoning" not in result
 
 

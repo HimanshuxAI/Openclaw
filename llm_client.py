@@ -14,7 +14,8 @@ def _build_prompt(failure_text, code_context):
 
 Rules:
 - Return only a textual unified diff beginning with `diff --git`.
-- Modify existing files only.
+- Modify exactly one existing non-test Python file.
+- Include exactly one diff hunk.
 - Do not create, delete, rename, or copy files.
 - Do not include binary changes, Markdown fences, or explanations.
 - Keep the patch focused on the failure and supplied code.

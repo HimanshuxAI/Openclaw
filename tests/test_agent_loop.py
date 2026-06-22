@@ -20,7 +20,7 @@ def _record(patch, success, timestamp="2026-06-21T00:00:00+00:00"):
     }
 
 
-def test_run_agent_returns_immediately_when_tests_pass(monkeypatch, tmp_path):
+def test_run_agent_returns_immediately_when_tests_pass(monkeypatch, tmp_path, capsys):
     calls = []
     monkeypatch.setattr(
         agent_loop.test_runner,
@@ -30,6 +30,12 @@ def test_run_agent_returns_immediately_when_tests_pass(monkeypatch, tmp_path):
 
     assert agent_loop.run_agent(tmp_path) is True
     assert calls == [tmp_path]
+    output = capsys.readouterr().out
+    assert "METRICS: attempts=0" in output
+    assert "model_calls=0" in output
+    assert "memory_replays=0" in output
+    assert "context_tokens=0" in output
+    assert "passed=true" in output
 
 
 def test_run_agent_stops_when_no_patch_is_generated(monkeypatch, tmp_path):
@@ -38,7 +44,9 @@ def test_run_agent_stops_when_no_patch_is_generated(monkeypatch, tmp_path):
         "run_tests",
         lambda path: {"passed": False, "output": "failed", "errors": ""},
     )
-    monkeypatch.setattr(agent_loop.patcher, "generate_patch", lambda failure, path: "")
+    monkeypatch.setattr(
+        agent_loop.patcher, "generate_patch", lambda failure, path, **kwargs: ""
+    )
 
     assert agent_loop.run_agent(tmp_path) is False
 
@@ -51,7 +59,9 @@ def test_run_agent_retests_after_applying_patch(monkeypatch, tmp_path):
         ]
     )
     monkeypatch.setattr(agent_loop.test_runner, "run_tests", lambda path: next(results))
-    monkeypatch.setattr(agent_loop.patcher, "generate_patch", lambda failure, path: "patch")
+    monkeypatch.setattr(
+        agent_loop.patcher, "generate_patch", lambda failure, path, **kwargs: "patch"
+    )
     monkeypatch.setattr(agent_loop.patcher, "apply_patch", lambda path, patch: True)
 
     assert agent_loop.run_agent(tmp_path) is True
@@ -72,7 +82,9 @@ def test_run_agent_stops_after_five_patch_attempts(monkeypatch, tmp_path):
         return True
 
     monkeypatch.setattr(agent_loop.test_runner, "run_tests", fail_tests)
-    monkeypatch.setattr(agent_loop.patcher, "generate_patch", lambda failure, path: "patch")
+    monkeypatch.setattr(
+        agent_loop.patcher, "generate_patch", lambda failure, path, **kwargs: "patch"
+    )
     monkeypatch.setattr(agent_loop.patcher, "apply_patch", apply)
 
     assert agent_loop.run_agent(tmp_path) is False
@@ -86,13 +98,15 @@ def test_run_agent_stops_when_patch_is_rejected(monkeypatch, tmp_path):
         "run_tests",
         lambda path: {"passed": False, "output": "failed", "errors": ""},
     )
-    monkeypatch.setattr(agent_loop.patcher, "generate_patch", lambda failure, path: "patch")
+    monkeypatch.setattr(
+        agent_loop.patcher, "generate_patch", lambda failure, path, **kwargs: "patch"
+    )
     monkeypatch.setattr(agent_loop.patcher, "apply_patch", lambda path, patch: False)
 
     assert agent_loop.run_agent(tmp_path) is False
 
 
-def test_run_agent_reuses_exact_success_without_generation(monkeypatch, tmp_path):
+def test_run_agent_reuses_exact_success_without_generation(monkeypatch, tmp_path, capsys):
     save_memory([_record("remembered-patch", True)])
     results = iter([FAILURE, {"passed": True, "output": "passed", "errors": ""}])
     applied = []
@@ -100,7 +114,9 @@ def test_run_agent_reuses_exact_success_without_generation(monkeypatch, tmp_path
     monkeypatch.setattr(
         agent_loop.patcher,
         "generate_patch",
-        lambda failure, path: (_ for _ in ()).throw(AssertionError("generator called")),
+        lambda failure, path, **kwargs: (_ for _ in ()).throw(
+            AssertionError("generator called")
+        ),
     )
     monkeypatch.setattr(
         agent_loop.patcher,
@@ -110,6 +126,7 @@ def test_run_agent_reuses_exact_success_without_generation(monkeypatch, tmp_path
 
     assert agent_loop.run_agent(tmp_path) is True
     assert applied == ["remembered-patch"]
+    assert "memory_replays=1" in capsys.readouterr().out
 
 
 def test_run_agent_reuses_fuzzy_high_confidence_success(monkeypatch, tmp_path):
@@ -125,7 +142,9 @@ def test_run_agent_reuses_fuzzy_high_confidence_success(monkeypatch, tmp_path):
     monkeypatch.setattr(
         agent_loop.patcher,
         "generate_patch",
-        lambda failure, path: (_ for _ in ()).throw(AssertionError("generator called")),
+        lambda failure, path, **kwargs: (_ for _ in ()).throw(
+            AssertionError("generator called")
+        ),
     )
     monkeypatch.setattr(
         agent_loop.patcher,
@@ -152,7 +171,9 @@ def test_run_agent_does_not_replay_when_similarity_is_below_threshold(
     results = iter([FAILURE, {"passed": True, "output": "passed", "errors": ""}])
     applied = []
     monkeypatch.setattr(agent_loop.test_runner, "run_tests", lambda path: next(results))
-    monkeypatch.setattr(agent_loop.patcher, "generate_patch", lambda failure, path: "fresh")
+    monkeypatch.setattr(
+        agent_loop.patcher, "generate_patch", lambda failure, path, **kwargs: "fresh"
+    )
     monkeypatch.setattr(
         agent_loop.patcher,
         "apply_patch",
@@ -174,7 +195,9 @@ def test_run_agent_does_not_repeat_a_patch_that_later_failed(monkeypatch, tmp_pa
     applied = []
     monkeypatch.setattr(agent_loop.test_runner, "run_tests", lambda path: next(results))
     monkeypatch.setattr(
-        agent_loop.patcher, "generate_patch", lambda failure, path: "fresh-patch"
+        agent_loop.patcher,
+        "generate_patch",
+        lambda failure, path, **kwargs: "fresh-patch",
     )
     monkeypatch.setattr(
         agent_loop.patcher,
@@ -192,7 +215,9 @@ def test_run_agent_falls_back_when_remembered_patch_is_stale(monkeypatch, tmp_pa
     applied = []
     monkeypatch.setattr(agent_loop.test_runner, "run_tests", lambda path: next(results))
     monkeypatch.setattr(
-        agent_loop.patcher, "generate_patch", lambda failure, path: "fresh-patch"
+        agent_loop.patcher,
+        "generate_patch",
+        lambda failure, path, **kwargs: "fresh-patch",
     )
 
     def apply(path, patch):
@@ -211,7 +236,9 @@ def test_run_agent_falls_back_when_remembered_patch_is_stale(monkeypatch, tmp_pa
 
 def test_run_agent_records_rejected_generated_patch(monkeypatch, tmp_path):
     monkeypatch.setattr(agent_loop.test_runner, "run_tests", lambda path: FAILURE)
-    monkeypatch.setattr(agent_loop.patcher, "generate_patch", lambda failure, path: "bad-patch")
+    monkeypatch.setattr(
+        agent_loop.patcher, "generate_patch", lambda failure, path, **kwargs: "bad-patch"
+    )
     monkeypatch.setattr(agent_loop.patcher, "apply_patch", lambda path, patch: False)
 
     assert agent_loop.run_agent(tmp_path) is False
@@ -225,7 +252,9 @@ def test_run_agent_does_not_store_unstructured_noise(monkeypatch, tmp_path):
         "run_tests",
         lambda path: {"passed": False, "output": "process died", "errors": ""},
     )
-    monkeypatch.setattr(agent_loop.patcher, "generate_patch", lambda failure, path: "")
+    monkeypatch.setattr(
+        agent_loop.patcher, "generate_patch", lambda failure, path, **kwargs: ""
+    )
 
     assert agent_loop.run_agent(tmp_path) is False
     assert load_memory() == []
