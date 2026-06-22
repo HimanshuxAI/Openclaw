@@ -1,7 +1,7 @@
 import patcher
 import test_runner
 from memory.patterns import extract_error_type, extract_file, normalize_error_message
-from memory.selector import find_similar_cases
+from memory.selector import REPLAY_THRESHOLD, find_similar_cases, similarity_score
 from memory.store import add_record, load_memory
 from utils import extract_failure, log
 
@@ -40,25 +40,20 @@ def _reusable_patch(failure, memory):
     if not error_type or not error_message or not file:
         return ""
 
-    def exact(record):
-        return (
-            record["error_type"] == error_type
-            and record["error_message"] == error_message
-            and record["file"] == file
-        )
-
-    latest_outcome = {}
-    for record in memory:
-        if not exact(record) or not record["patch"]:
+    for match in find_similar_cases(failure, memory):
+        case = match["record"]
+        patch = case["patch"]
+        if match["score"] < REPLAY_THRESHOLD or not case["success"] or not patch:
             continue
-        previous = latest_outcome.get(record["patch"])
-        if previous is None or record["timestamp"] >= previous[0]:
-            latest_outcome[record["patch"]] = (record["timestamp"], record["success"])
-
-    for case in find_similar_cases(failure, memory):
-        outcome = latest_outcome.get(case["patch"])
-        if exact(case) and case["success"] and case["patch"] and outcome and outcome[1]:
-            return case["patch"]
+        comparable = [
+            record
+            for record in memory
+            if record["patch"] == patch
+            and similarity_score(failure, record) >= REPLAY_THRESHOLD
+        ]
+        latest = max(comparable, key=lambda record: record["timestamp"], default=None)
+        if latest and latest["success"]:
+            return patch
     return ""
 
 
