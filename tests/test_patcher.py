@@ -3,7 +3,15 @@ import subprocess
 import pytest
 
 import patcher
-from patcher import apply_patch, generate_patch, mock_llm_fix
+from patcher import (
+    apply_patch,
+    generate_patch,
+    generate_patch_candidates,
+    mock_llm_fix,
+    rank_patch_candidates,
+    revert_patch,
+    score_patch,
+)
 
 
 VALID_PATCH = """diff --git a/module.py b/module.py
@@ -24,6 +32,19 @@ def test_mock_llm_extracts_explicit_patch_block():
 
     assert mock_llm_fix(failure) == VALID_PATCH
     assert generate_patch(failure, "/unused") == VALID_PATCH
+
+
+def test_generate_patch_candidates_extracts_multiple_mock_patch_blocks():
+    second = VALID_PATCH.replace("fixed", "also_fixed")
+    failure = (
+        "failed\nOPENCLAW_PATCH_START\n"
+        + VALID_PATCH
+        + "\nOPENCLAW_PATCH_END\nOPENCLAW_PATCH_START\n"
+        + second
+        + "OPENCLAW_PATCH_END\n"
+    )
+
+    assert generate_patch_candidates(failure, "/unused") == [VALID_PATCH, second]
 
 
 def test_mock_llm_returns_empty_string_for_unknown_failure():
@@ -95,6 +116,39 @@ def test_generate_patch_falls_back_to_mock_when_model_returns_no_diff(
 def test_apply_patch_modifies_existing_regular_file(git_repo):
     assert apply_patch(git_repo, VALID_PATCH) is True
     assert (git_repo / "module.py").read_text(encoding="utf-8") == "VALUE = 'fixed'\n"
+
+
+def test_revert_patch_removes_applied_candidate(git_repo):
+    assert apply_patch(git_repo, VALID_PATCH) is True
+    assert revert_patch(git_repo, VALID_PATCH) is True
+
+    assert (git_repo / "module.py").read_text(encoding="utf-8") == "VALUE = 'original'\n"
+
+
+def test_score_patch_rejects_invalid_diff_and_rewards_minimal_valid_patch(git_repo):
+    invalid = "not a diff\n"
+
+    invalid_score = score_patch(git_repo, invalid, "AssertionError")
+    valid_score = score_patch(git_repo, VALID_PATCH, "AssertionError: VALUE")
+
+    assert invalid_score["confidence"] == 0.0
+    assert invalid_score["accepted"] is False
+    assert valid_score["confidence"] >= 0.70
+    assert valid_score["accepted"] is True
+    assert valid_score["target"] == "module.py"
+
+
+def test_rank_patch_candidates_deduplicates_and_sorts_by_confidence(git_repo):
+    noisy = VALID_PATCH.replace("+VALUE = 'fixed'", "+VALUE = 'fixed'\n+EXTRA = 1")
+
+    ranked = rank_patch_candidates(
+        git_repo,
+        [noisy, "not a diff\n", VALID_PATCH, VALID_PATCH],
+        "AssertionError: VALUE",
+    )
+
+    assert [candidate["patch"] for candidate in ranked] == [VALID_PATCH, noisy]
+    assert all(candidate["score"]["accepted"] for candidate in ranked)
 
 
 @pytest.mark.parametrize(
