@@ -9,8 +9,9 @@ DEFAULT_TIMEOUT = 120.0
 MAX_TOKENS = 16384
 
 
-def _build_prompt(failure_text, code_context):
-    return f"""Create one safe unified diff that fixes the pytest failure.
+def _build_prompt(failure_text, code_context, candidate_count=1):
+    plural = "diff" if candidate_count == 1 else "candidate diffs"
+    return f"""Create {candidate_count} safe unified {plural} that fix the pytest failure.
 
 Rules:
 - Return only a textual unified diff beginning with `diff --git`.
@@ -46,6 +47,34 @@ def _extract_unified_diff(response_text):
     return candidate.strip() + "\n"
 
 
+def _extract_unified_diffs(response_text, limit=3):
+    if not isinstance(response_text, str):
+        return []
+    fenced = re.findall(
+        r"```(?:diff)?\s*(diff --git .*?)\s*```",
+        response_text,
+        flags=re.DOTALL | re.IGNORECASE,
+    )
+    if fenced:
+        candidates = fenced
+    else:
+        candidates = re.findall(
+            r"(diff --git .*?)(?=\n\s*diff --git |\Z)",
+            response_text,
+            flags=re.DOTALL,
+        )
+    diffs = []
+    seen = set()
+    for candidate in candidates:
+        patch = candidate.strip() + "\n"
+        if patch not in seen:
+            seen.add(patch)
+            diffs.append(patch)
+        if len(diffs) >= limit:
+            break
+    return diffs
+
+
 def _timeout_from_environment():
     try:
         value = float(os.environ.get("NVIDIA_API_TIMEOUT", DEFAULT_TIMEOUT))
@@ -55,9 +84,14 @@ def _timeout_from_environment():
 
 
 def generate_nvidia_patch(failure_text, code_context):
+    patches = generate_nvidia_patches(failure_text, code_context, count=1)
+    return patches[0] if patches else ""
+
+
+def generate_nvidia_patches(failure_text, code_context, count=3):
     api_key = os.environ.get("NVIDIA_API_KEY", "").strip()
     if not api_key:
-        return ""
+        return []
 
     try:
         openai = importlib.import_module("openai")
@@ -73,7 +107,10 @@ def generate_nvidia_patch(failure_text, code_context):
                     "role": "system",
                     "content": "You are a precise software repair tool. Output only unified diffs.",
                 },
-                {"role": "user", "content": _build_prompt(failure_text, code_context)},
+                {
+                    "role": "user",
+                    "content": _build_prompt(failure_text, code_context, count),
+                },
             ],
             temperature=1,
             top_p=0.95,
@@ -96,6 +133,6 @@ def generate_nvidia_patch(failure_text, code_context):
             value = getattr(delta, "content", None)
             if value:
                 content.append(value)
-        return _extract_unified_diff("".join(content))
+        return _extract_unified_diffs("".join(content), limit=count)
     except Exception:
-        return ""
+        return []
