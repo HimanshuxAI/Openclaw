@@ -1,4 +1,9 @@
-from memory.selector import REPLAY_THRESHOLD, find_similar_cases, similarity_score
+from memory.selector import (
+    REPLAY_THRESHOLD,
+    find_fix_templates,
+    find_similar_cases,
+    similarity_score,
+)
 
 
 def _case(
@@ -91,3 +96,20 @@ def test_similarity_score_gives_basename_match_less_weight_than_full_path():
     )
 
     assert basename < full
+
+
+def test_find_fix_templates_groups_successful_repeated_patterns():
+    repeated = [
+        _case(patch="template", timestamp="2026-06-20T00:00:00+00:00"),
+        _case(patch="template", timestamp="2026-06-21T00:00:00+00:00"),
+        _case(patch="failed", success=False, timestamp="2026-06-22T00:00:00+00:00"),
+    ]
+
+    templates = find_fix_templates(
+        "FAILED tests/test_auth.py\nNameError: name 'user' is not defined",
+        repeated,
+    )
+
+    assert templates[0]["record"]["patch"] == "template"
+    assert templates[0]["count"] == 2
+    assert all(template["record"]["success"] for template in templates)
