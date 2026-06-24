@@ -1,4 +1,4 @@
-from test_runner import run_tests
+from test_runner import collect_tests, run_test_subset, run_tests
 
 
 def test_run_tests_captures_a_passing_pytest_run(tmp_path):
@@ -36,3 +36,33 @@ def test_run_tests_does_not_reuse_stale_bytecode_after_equal_size_edit(tmp_path)
     module.write_text("value = True \n", encoding="utf-8")
 
     assert run_tests(tmp_path)["passed"] is True
+
+
+def test_collect_tests_returns_pytest_node_ids(tmp_path):
+    (tmp_path / "test_sample.py").write_text(
+        "def test_one():\n    assert True\n\n"
+        "def test_two():\n    assert True\n",
+        encoding="utf-8",
+    )
+
+    assert collect_tests(tmp_path) == [
+        "test_sample.py::test_one",
+        "test_sample.py::test_two",
+    ]
+
+
+def test_run_test_subset_runs_only_selected_nodes(tmp_path):
+    (tmp_path / "test_sample.py").write_text(
+        "def test_good():\n    assert True\n\n"
+        "def test_bad():\n    assert False\n",
+        encoding="utf-8",
+    )
+
+    result = run_test_subset(tmp_path, ["test_sample.py::test_good"])
+
+    assert result["passed"] is True
+    assert "1 passed" in result["output"]
+
+
+def test_run_test_subset_empty_selection_is_success(tmp_path):
+    assert run_test_subset(tmp_path, [])["passed"] is True
