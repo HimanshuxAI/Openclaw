@@ -11,25 +11,58 @@ import tempfile
 from rag.context_builder import build_context, estimate_tokens
 from rag.indexer import index_repo
 from rag.retriever import retrieve_context
-from llm_client import generate_nvidia_patch
+from llm_client import generate_nvidia_patch, generate_nvidia_patches
 from repo_manager import load_local_repo
+from rag.router import analyze_failure
 
 
 MAX_PATCH_BYTES = 100 * 1024
 PATCH_START = "OPENCLAW_PATCH_START"
 PATCH_END = "OPENCLAW_PATCH_END"
+MIN_PATCH_CONFIDENCE = 0.70
+MAX_CANDIDATES = 3
 
 
 def mock_llm_fix(failure_text, code_context=""):
+    candidates = mock_llm_fix_candidates(failure_text, code_context, count=1)
+    return candidates[0] if candidates else ""
+
+
+def mock_llm_fix_candidates(failure_text, code_context="", count=MAX_CANDIDATES):
     del code_context
-    pattern = rf"(?:^|\n){PATCH_START}\r?\n(.*?)(?:^|\n){PATCH_END}(?:\r?\n|$)"
-    match = re.search(pattern, failure_text, flags=re.DOTALL)
-    if not match:
-        return ""
-    return match.group(1).rstrip("\r\n") + "\n"
+    candidates = []
+    seen = set()
+    remainder = failure_text
+    while PATCH_START in remainder and PATCH_END in remainder:
+        _, after_start = remainder.split(PATCH_START, 1)
+        body, remainder = after_start.split(PATCH_END, 1)
+        patch = body.strip("\r\n") + "\n"
+        if patch not in seen:
+            seen.add(patch)
+            candidates.append(patch)
+        if len(candidates) >= count:
+            break
+    return candidates
 
 
 def generate_patch(failure_output, repo_path, metrics=None, memory=None):
+    candidates = generate_patch_candidates(
+        failure_output,
+        repo_path,
+        metrics=metrics,
+        memory=memory,
+        count=1,
+    )
+    return candidates[0] if candidates else ""
+
+
+def generate_patch_candidates(
+    failure_output,
+    repo_path,
+    metrics=None,
+    memory=None,
+    count=MAX_CANDIDATES,
+):
     generation_metrics = metrics if metrics is not None else {}
     generation_metrics["model_calls"] = 0
     generation_metrics["context_tokens"] = 0
@@ -42,10 +75,20 @@ def generate_patch(failure_output, repo_path, metrics=None, memory=None):
     generation_metrics["context_tokens"] = estimate_tokens(code_context)
     if os.environ.get("NVIDIA_API_KEY", "").strip():
         generation_metrics["model_calls"] = 1
-        model_patch = generate_nvidia_patch(failure_output, code_context)
-        if model_patch:
-            return model_patch
-    return mock_llm_fix(failure_output, code_context)
+        if count == 1:
+            model_patch = generate_nvidia_patch(failure_output, code_context)
+            if model_patch:
+                return [model_patch]
+        else:
+            model_patches = generate_nvidia_patches(
+                failure_output, code_context, count=count
+            )
+            if model_patches:
+                return model_patches[:count]
+    if count == 1:
+        patch = mock_llm_fix(failure_output, code_context)
+        return [patch] if patch else []
+    return mock_llm_fix_candidates(failure_output, code_context, count=count)
 
 
 def _safe_relative_path(header_path, prefix):
@@ -168,12 +211,134 @@ def _validated_target(repo, patch):
     return target
 
 
+def _patch_change_counts(patch):
+    added = 0
+    removed = 0
+    for line in patch.splitlines():
+        if line.startswith(("+++", "---")):
+            continue
+        if line.startswith("+"):
+            added += 1
+        elif line.startswith("-"):
+            removed += 1
+    return added, removed
+
+
+def _history_bonus(patch, failure, memory):
+    if not memory:
+        return 0.0
+    from memory.selector import similarity_score
+
+    best = 0.0
+    for record in memory:
+        if record.get("patch") != patch or not record.get("success"):
+            continue
+        best = max(best, similarity_score(failure, record))
+    return min(0.12, best * 0.12)
+
+
+def _test_relevance(target, patch, failure):
+    analysis = analyze_failure(failure)
+    target_text = target.as_posix().lower()
+    patch_text = patch.lower()
+    identifiers = [identifier.lower() for identifier in analysis["identifiers"]]
+    if any(identifier in patch_text or identifier in target_text for identifier in identifiers):
+        return 0.12
+    if analysis["kind"] in {"syntax", "import"}:
+        return 0.08
+    return 0.04
+
+
 def _validate_patch(repo, patch):
     return _validated_target(repo, patch) is not None
 
 
+def score_patch(repo_path, patch, failure, memory=None):
+    try:
+        repo = load_local_repo(repo_path)
+    except (ValueError, RuntimeError):
+        return {
+            "confidence": 0.0,
+            "accepted": False,
+            "target": "",
+            "reason": "repository unavailable",
+        }
+    target = _validated_target(repo, patch)
+    if target is None:
+        return {
+            "confidence": 0.0,
+            "accepted": False,
+            "target": "",
+            "reason": "invalid diff",
+        }
+    if _git_apply(repo, patch, check=True).returncode != 0:
+        return {
+            "confidence": 0.0,
+            "accepted": False,
+            "target": target.as_posix(),
+            "reason": "diff does not apply",
+        }
+    if not _preflight_patch(repo, patch, target):
+        return {
+            "confidence": 0.0,
+            "accepted": False,
+            "target": target.as_posix(),
+            "reason": "static checks failed",
+        }
+
+    added, removed = _patch_change_counts(patch)
+    changed_lines = added + removed
+    minimality = max(0.0, 0.18 - max(0, changed_lines - 6) * 0.015)
+    confidence = 0.58
+    confidence += minimality
+    confidence += _test_relevance(target, patch, failure)
+    confidence += _history_bonus(patch, failure, memory)
+    confidence = min(1.0, round(confidence, 6))
+    return {
+        "confidence": confidence,
+        "accepted": confidence >= MIN_PATCH_CONFIDENCE,
+        "target": target.as_posix(),
+        "reason": "accepted" if confidence >= MIN_PATCH_CONFIDENCE else "low confidence",
+    }
+
+
+def rank_patch_candidates(repo_path, patches, failure, memory=None):
+    ranked = []
+    seen = set()
+    for patch in patches:
+        if not patch or patch in seen:
+            continue
+        seen.add(patch)
+        score = score_patch(repo_path, patch, failure, memory=memory)
+        if score["accepted"]:
+            ranked.append({"patch": patch, "score": score})
+    ranked.sort(
+        key=lambda candidate: (
+            candidate["score"]["confidence"],
+            -sum(_patch_change_counts(candidate["patch"])),
+        ),
+        reverse=True,
+    )
+    return ranked
+
+
 def _git_apply(repo, patch, check):
     args = ["git", "apply"]
+    if check:
+        args.append("--check")
+    args.extend(["--whitespace=error-all", "-"])
+    return subprocess.run(
+        args,
+        cwd=repo,
+        input=patch,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+
+def _git_apply_reverse(repo, patch, check):
+    args = ["git", "apply", "--reverse"]
     if check:
         args.append("--check")
     args.extend(["--whitespace=error-all", "-"])
@@ -302,3 +467,15 @@ def apply_patch(repo_path, patch):
     if not _preflight_patch(repo, patch, target):
         return False
     return _git_apply(repo, patch, check=False).returncode == 0
+
+
+def revert_patch(repo_path, patch):
+    try:
+        repo = load_local_repo(repo_path)
+    except (ValueError, RuntimeError):
+        return False
+    if _validated_target(repo, patch) is None:
+        return False
+    if _git_apply_reverse(repo, patch, check=True).returncode != 0:
+        return False
+    return _git_apply_reverse(repo, patch, check=False).returncode == 0
