@@ -1,6 +1,0 @@
-{
-  "last_turn_at": "2026-06-21T08:22:36.572Z",
-  "turn_count": 12,
-  "last_progress_at": "2026-06-21T08:22:36.572Z",
-  "last_agent_output": "Fixed. The UI now accepts either:\n\n- Local path: `/Users/you/project`\n- Git URL: `https://github.com"
-}
