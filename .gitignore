@@ -10,3 +10,4 @@ docs/
 .omx/logs/
 .omx/state/
 .omx/metrics.json
+.omx/
