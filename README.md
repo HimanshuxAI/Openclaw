@@ -12,10 +12,13 @@ small, bounded repair loop and leaves every applied change visible in Git.
 - Runs the repository's pytest suite and captures failures.
 - Routes each failure type to small function, method, test, or import scopes.
 - Reuses a similar successful fix only above a strict confidence threshold.
-- Requests a unified diff from NVIDIA Nemotron when configured.
+- Reuses repeated successful fixes as lightweight templates before calling a model.
+- Requests up to three unified-diff candidates from NVIDIA Nemotron when configured.
 - Retains the explicit marker patch as an offline fallback.
+- Scores candidate patches for safety, relevance, and minimality before applying them.
 - Preflights one-file, one-hunk Python patches before they touch the repository.
-- Applies valid patches and reruns pytest.
+- Runs a small regression guard on previously passing tests before the full rerun.
+- Rolls back weak candidates and falls through to the next ranked patch.
 - Stops when tests pass, a patch fails validation, or five attempts are used.
 
 ## Demo
@@ -108,9 +111,11 @@ classify the failure
     ↓
 replay a high-confidence fix or retrieve relevant scopes
     ↓
-request a unified diff
+build template and generated patch candidates
     ↓
-validate and apply the patch
+score and rank the candidates
+    ↓
+validate, apply, and regression-check the best patch
     ↓
 run pytest again
     ↓
@@ -119,8 +124,9 @@ record the verified outcome
 
 The loop performs at most five fix attempts. Each attempt can change one
 existing non-test Python file with one hunk. A remembered patch still passes
-the full preflight. If it is stale, OpenClaw records the failure and tries the
-current generator once.
+the full preflight. If a template or remembered patch is stale, OpenClaw
+records the failure, rolls it back when needed, and tries the next ranked
+candidate before spending another iteration.
 
 ## Quick Start
 
@@ -150,7 +156,8 @@ export NVIDIA_MODEL="nvidia/nemotron-3-super-120b-a12b"
 OpenClaw sends the pytest failure and less than 2,000 estimated tokens of
 retrieved code context to NVIDIA's OpenAI-compatible endpoint. Nemotron streams
 reasoning and final content; OpenClaw ignores the reasoning stream and accepts
-only final unified-diff content.
+only final unified-diff content. In Phase 3, one model call can return up to
+three candidate diffs so the local scorer can choose the best patch first.
 
 Optional endpoint settings are documented in `.env.example`. OpenClaw does not
 load `.env` files automatically. The web UI never accepts or displays API keys.
@@ -222,7 +229,8 @@ Memory contains only normalized error details, the referenced file, the patch,
 its verified outcome, and a timestamp. It never stores repository context.
 Error type, normalized-message similarity, file similarity, and latest outcome
 produce a confidence score. Replay requires at least `0.88`. A patch that later
-fails for a comparable case is not repeated.
+fails for a comparable case is not repeated. Repeated successful patches can
+also be promoted into small fix templates and reused before generation.
 
 ## Project Structure
 
@@ -231,8 +239,8 @@ main.py                 CLI and repository setup
 web_server.py           Loopback-only local web interface
 repo_manager.py         Clone, load, and reset Git repositories
 test_runner.py          Run pytest and capture its result
-agent_loop.py           Bounded test → patch → retest loop
-patcher.py              Model routing and safe diff application
+agent_loop.py           Bounded test → rank → patch → retest loop
+patcher.py              Candidate generation, scoring, and safe diff application
 llm_client.py           NVIDIA Nemotron streaming client
 utils.py                Failure extraction and console output
 rag/indexer.py          Extract AST scopes and shallow dependency edges
@@ -253,6 +261,8 @@ tests/                  Unit and end-to-end coverage
   stops or uses an available offline fallback.
 - Offline new fixes require an explicit unified diff in pytest output;
   high-confidence learned fixes can be reused without generating it again.
+- Regression guarding uses a small collected-test subset. It is cheap and
+  useful, but it is not a proof against every possible collateral regression.
 - Only pytest is supported.
 - Repository retrieval indexes Python files only. Static call and import edges
   do not model dynamic dispatch or dynamic imports.
