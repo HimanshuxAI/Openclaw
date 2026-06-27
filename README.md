@@ -16,9 +16,13 @@ small, bounded repair loop and leaves every applied change visible in Git.
 - Requests up to three unified-diff candidates from NVIDIA Nemotron when configured.
 - Retains the explicit marker patch as an offline fallback.
 - Scores candidate patches for safety, relevance, and minimality before applying them.
+- Extracts failing-test intent and scores candidates against expected behavior signals.
+- Learns which scoring signals predict success for each failure cluster.
 - Preflights one-file, one-hunk Python patches before they touch the repository.
 - Runs a small regression guard on previously passing tests before the full rerun.
 - Rolls back weak candidates and falls through to the next ranked patch.
+- Reports each attempted patch's failure cluster, intent vector, confidence, outcome,
+  and learning update.
 - Stops when tests pass, a patch fails validation, or five attempts are used.
 
 ## Demo
@@ -109,17 +113,19 @@ extract the failure
     ↓
 classify the failure
     ↓
+extract failing-test intent and patch confidence
+    ↓
 replay a high-confidence fix or retrieve relevant scopes
     ↓
 build template and generated patch candidates
     ↓
-score and rank the candidates
+score and rank candidates with learned per-cluster signal weights
     ↓
 validate, apply, and regression-check the best patch
     ↓
 run pytest again
     ↓
-record the verified outcome
+record the verified outcome and scoring signals
 ```
 
 The loop performs at most five fix attempts. Each attempt can change one
@@ -127,6 +133,15 @@ existing non-test Python file with one hunk. A remembered patch still passes
 the full preflight. If a template or remembered patch is stale, OpenClaw
 records the failure, rolls it back when needed, and tries the next ranked
 candidate before spending another iteration.
+
+Phase 4 moves scoring from "which diff applies" toward "which diff matches the
+system intent." Each attempt is grouped into a failure cluster such as
+`assertion`, `type_error`, `import`, or `logic`. Assertion lines, observed and
+expected values, pytest nodes, and identifiers become an intent vector. Candidate
+confidence combines safety, relevance, history, and intent signals with weights
+learned from prior outcomes in the same cluster. Successful one-line fixes are
+also scanned against the codebase so OpenClaw can report similar fix patterns
+instead of treating every failure as isolated.
 
 ## Quick Start
 
