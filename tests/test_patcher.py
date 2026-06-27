@@ -151,6 +151,51 @@ def test_rank_patch_candidates_deduplicates_and_sorts_by_confidence(git_repo):
     assert all(candidate["score"]["accepted"] for candidate in ranked)
 
 
+def test_score_patch_includes_intent_signals_and_learned_weights(git_repo):
+    failure = """FAILED tests/test_module.py::test_value
+>       assert VALUE == 'fixed'
+E       AssertionError: assert 'original' == 'fixed'
+"""
+    memory = [
+        {
+            "error_type": "AssertionError",
+            "error_message": "assert original == fixed",
+            "file": "tests/test_module.py",
+            "patch": "old",
+            "success": True,
+            "timestamp": "2026-06-21T00:00:00+00:00",
+            "cluster": "assertion",
+            "intent_vector": ["value", "fixed"],
+            "score": 0.82,
+            "confidence": 0.82,
+            "score_signals": {"intent": 0.90, "minimality": 0.10},
+            "outcome": "passed",
+        },
+        {
+            "error_type": "AssertionError",
+            "error_message": "assert original == fixed",
+            "file": "tests/test_module.py",
+            "patch": "old",
+            "success": False,
+            "timestamp": "2026-06-21T00:01:00+00:00",
+            "cluster": "assertion",
+            "intent_vector": ["value", "fixed"],
+            "score": 0.74,
+            "confidence": 0.74,
+            "score_signals": {"intent": 0.10, "minimality": 0.90},
+            "outcome": "failed",
+        },
+    ]
+
+    score = score_patch(git_repo, VALID_PATCH, failure, memory=memory)
+
+    assert score["cluster"] == "assertion"
+    assert "fixed" in score["intent"]["vector"]
+    assert score["signals"]["intent"] > 0
+    assert score["weights"]["intent"] > score["weights"]["minimality"]
+    assert score["accepted"] is True
+
+
 @pytest.mark.parametrize(
     "unsafe_patch",
     [
