@@ -13,6 +13,14 @@ REQUIRED_FIELDS = {
     "success",
     "timestamp",
 }
+OPTIONAL_FIELDS = {
+    "cluster",
+    "intent_vector",
+    "score",
+    "confidence",
+    "score_signals",
+    "outcome",
+}
 
 
 def _memory_path():
@@ -23,12 +31,36 @@ def _memory_path():
 
 
 def _valid_record(record):
-    if not isinstance(record, dict) or set(record) != REQUIRED_FIELDS:
+    if not isinstance(record, dict):
+        return False
+    keys = set(record)
+    if not REQUIRED_FIELDS.issubset(keys) or not keys.issubset(REQUIRED_FIELDS | OPTIONAL_FIELDS):
         return False
     string_fields = REQUIRED_FIELDS - {"success"}
     if not all(isinstance(record[field], str) for field in string_fields):
         return False
-    return isinstance(record["success"], bool)
+    if not isinstance(record["success"], bool):
+        return False
+    if "cluster" in record and not isinstance(record["cluster"], str):
+        return False
+    if "intent_vector" in record and not (
+        isinstance(record["intent_vector"], list)
+        and all(isinstance(value, str) for value in record["intent_vector"])
+    ):
+        return False
+    if "score" in record and not isinstance(record["score"], (int, float)):
+        return False
+    if "confidence" in record and not isinstance(record["confidence"], (int, float)):
+        return False
+    if "score_signals" in record and not (
+        isinstance(record["score_signals"], dict)
+        and all(isinstance(key, str) for key in record["score_signals"])
+        and all(isinstance(value, (int, float)) for value in record["score_signals"].values())
+    ):
+        return False
+    if "outcome" in record and not isinstance(record["outcome"], str):
+        return False
+    return True
 
 
 def load_memory():
