@@ -3,6 +3,7 @@ import time
 
 import patcher
 import test_runner
+from correctness import cluster_failure, extract_test_intent, suggest_generalizations
 from memory.patterns import extract_error_type, extract_file, normalize_error_message
 from memory.selector import (
     REPLAY_THRESHOLD,
@@ -34,10 +35,47 @@ def _signature(failure):
     )
 
 
-def _record_attempt(failure, patch, success):
+def _phase4_summary(score):
+    return {
+        "cluster": score.get("cluster", ""),
+        "intent_vector": score.get("intent", {}).get("vector", []),
+        "confidence": float(score.get("confidence", 0.0) or 0.0),
+        "score_signals": score.get("signals", {}),
+    }
+
+
+def _fallback_phase4(failure):
+    intent = extract_test_intent(failure)
+    return {
+        "cluster": cluster_failure(failure),
+        "intent_vector": intent["vector"],
+        "confidence": 0.0,
+        "score_signals": {},
+    }
+
+
+def _log_phase4(score):
+    summary = _phase4_summary(score)
+    intent = ",".join(summary["intent_vector"][:6]) or "none"
+    signals = ",".join(
+        f"{name}:{value:.2f}"
+        for name, value in sorted(summary["score_signals"].items())
+        if isinstance(value, (int, float))
+    ) or "none"
+    log(
+        "PHASE4: "
+        f"cluster={summary['cluster'] or 'unknown'} "
+        f"intent={intent} "
+        f"confidence={summary['confidence']:.2f} "
+        f"signals={signals}"
+    )
+
+
+def _record_attempt(failure, patch, success, score=None):
     error_type, error_message, file = _signature(failure)
     if not error_type or not error_message:
         return
+    phase4 = _phase4_summary(score or {}) if score else _fallback_phase4(failure)
     try:
         add_record(
             {
@@ -46,7 +84,19 @@ def _record_attempt(failure, patch, success):
                 "file": file,
                 "patch": patch,
                 "success": success,
+                "cluster": phase4["cluster"],
+                "intent_vector": phase4["intent_vector"],
+                "score": phase4["confidence"],
+                "confidence": phase4["confidence"],
+                "score_signals": phase4["score_signals"],
+                "outcome": "passed" if success else "failed",
             }
+        )
+        log(
+            "LEARNING: "
+            f"cluster={phase4['cluster'] or 'unknown'} "
+            f"confidence={phase4['confidence']:.2f} "
+            f"outcome={'passed' if success else 'failed'}"
         )
     except (OSError, ValueError):
         log("Memory write skipped")
@@ -158,12 +208,14 @@ def _try_ranked_candidates(repo_path, failure, ranked, baseline_nodes):
     applied_candidate = False
     for candidate in ranked:
         patch = candidate["patch"]
+        score = candidate.get("score", {})
+        _log_phase4(score)
         if not patcher.apply_patch(repo_path, patch):
-            _record_attempt(failure, patch, False)
+            _record_attempt(failure, patch, False, score)
             continue
         applied_candidate = True
         if not _regression_guard(repo_path, failure, patch, baseline_nodes):
-            _record_attempt(failure, patch, False)
+            _record_attempt(failure, patch, False, score)
             patcher.revert_patch(repo_path, patch)
             log("Rejected candidate: regression guard failed")
             continue
@@ -236,8 +288,18 @@ def run_agent(repo_path):
 
         if patch and candidate_result:
             result = candidate_result
-            _record_attempt(failure, patch, result["passed"])
+            score = next(
+                (
+                    candidate.get("score", {})
+                    for candidate in ranked
+                    if candidate.get("patch") == patch
+                ),
+                {},
+            )
+            _record_attempt(failure, patch, result["passed"], score)
             if result["passed"]:
+                generalizations = suggest_generalizations(repo_path, patch)
+                log(f"GENERALIZATION: suggestions={len(generalizations)}")
                 log("SUCCESS: tests pass")
                 return _finish(True, metrics, started_at)
             stop_reason = _pytest_stop_reason(result)
