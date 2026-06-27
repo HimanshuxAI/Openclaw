@@ -11,6 +11,12 @@ import tempfile
 from rag.context_builder import build_context, estimate_tokens
 from rag.indexer import index_repo
 from rag.retriever import retrieve_context
+from correctness import (
+    combine_score,
+    extract_test_intent,
+    intent_signal,
+    learned_signal_weights,
+)
 from llm_client import generate_nvidia_patch, generate_nvidia_patches
 from repo_manager import load_local_repo
 from rag.router import analyze_failure
@@ -286,18 +292,25 @@ def score_patch(repo_path, patch, failure, memory=None):
             "reason": "static checks failed",
         }
 
+    intent = extract_test_intent(failure)
     added, removed = _patch_change_counts(patch)
     changed_lines = added + removed
-    minimality = max(0.0, 0.18 - max(0, changed_lines - 6) * 0.015)
-    confidence = 0.58
-    confidence += minimality
-    confidence += _test_relevance(target, patch, failure)
-    confidence += _history_bonus(patch, failure, memory)
-    confidence = min(1.0, round(confidence, 6))
+    signals = {
+        "minimality": max(0.0, 1.0 - max(0, changed_lines - 2) * 0.12),
+        "relevance": min(1.0, _test_relevance(target, patch, failure) / 0.12),
+        "history": min(1.0, _history_bonus(patch, failure, memory) / 0.12),
+        "intent": intent_signal(patch, failure),
+    }
+    weights = learned_signal_weights(memory or [], intent["cluster"])
+    confidence = combine_score(signals, weights)
     return {
         "confidence": confidence,
         "accepted": confidence >= MIN_PATCH_CONFIDENCE,
         "target": target.as_posix(),
+        "cluster": intent["cluster"],
+        "intent": intent,
+        "signals": signals,
+        "weights": weights,
         "reason": "accepted" if confidence >= MIN_PATCH_CONFIDENCE else "low confidence",
     }
 
