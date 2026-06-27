@@ -68,3 +68,18 @@ def test_load_memory_ignores_invalid_records_in_an_existing_file(memory_path):
     memory_path.write_text(json.dumps([_record(), {"noise": True}]), encoding="utf-8")
 
     assert load_memory() == [_record()]
+
+
+def test_memory_accepts_phase_four_attempt_metadata():
+    record = _record() | {
+        "cluster": "assertion",
+        "intent_vector": ["add", "5"],
+        "score": 0.86,
+        "confidence": 0.86,
+        "score_signals": {"intent": 0.8, "minimality": 0.4},
+        "outcome": "passed",
+    }
+
+    save_memory([record])
+
+    assert load_memory() == [record]
