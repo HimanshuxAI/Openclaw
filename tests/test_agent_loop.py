@@ -141,6 +141,48 @@ def test_run_agent_applies_best_scored_candidate_first(monkeypatch, tmp_path):
     assert applied == ["strong-patch"]
 
 
+def test_run_agent_logs_phase_four_attempt_details(monkeypatch, tmp_path, capsys):
+    results = iter(
+        [
+            FAILURE,
+            {"passed": True, "output": "passed", "errors": "", "exit_code": 0},
+        ]
+    )
+    monkeypatch.setattr(agent_loop.test_runner, "run_tests", lambda path: next(results))
+    monkeypatch.setattr(
+        agent_loop.patcher,
+        "generate_patch_candidates",
+        lambda failure, path, **kwargs: ["patch"],
+    )
+    monkeypatch.setattr(
+        agent_loop.patcher,
+        "rank_patch_candidates",
+        lambda path, patches, failure, memory=None: [
+            {
+                "patch": "patch",
+                "score": {
+                    "confidence": 0.91,
+                    "cluster": "assertion",
+                    "signals": {"intent": 0.80},
+                    "intent": {"vector": ["expected", "5"]},
+                },
+            }
+        ],
+    )
+    monkeypatch.setattr(agent_loop, "_regression_guard", lambda *args: True)
+    monkeypatch.setattr(agent_loop.patcher, "apply_patch", lambda path, patch: True)
+
+    assert agent_loop.run_agent(tmp_path) is True
+    output = capsys.readouterr().out
+    assert "PHASE4: cluster=assertion" in output
+    assert "intent=expected,5" in output
+    assert "confidence=0.91" in output
+    attempt = load_memory()[-1]
+    assert attempt["cluster"] == "assertion"
+    assert attempt["confidence"] == 0.91
+    assert attempt["outcome"] == "passed"
+
+
 def test_run_agent_rejects_regression_candidate_and_falls_back(monkeypatch, tmp_path):
     results = iter(
         [
