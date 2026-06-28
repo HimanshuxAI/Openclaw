@@ -18,11 +18,15 @@ small, bounded repair loop and leaves every applied change visible in Git.
 - Scores candidate patches for safety, relevance, and minimality before applying them.
 - Extracts failing-test intent and scores candidates against expected behavior signals.
 - Learns which scoring signals predict success for each failure cluster.
+- Builds a lightweight failure graph across files, functions, and tests.
+- Simulates patch impact before applying a candidate and penalizes risky edits.
 - Preflights one-file, one-hunk Python patches before they touch the repository.
 - Runs a small regression guard on previously passing tests before the full rerun.
 - Rolls back weak candidates and falls through to the next ranked patch.
 - Reports each attempted patch's failure cluster, intent vector, confidence, outcome,
   and learning update.
+- Applies low-risk generalized fixes after a successful patch, then reruns tests and
+  rolls back any propagation that regresses.
 - Stops when tests pass, a patch fails validation, or five attempts are used.
 
 ## Demo
