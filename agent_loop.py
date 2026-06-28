@@ -4,6 +4,7 @@ import time
 import patcher
 import test_runner
 from correctness import cluster_failure, extract_test_intent, suggest_generalizations
+from failure_graph import FailureGraph
 from memory.patterns import extract_error_type, extract_file, normalize_error_message
 from memory.selector import (
     REPLAY_THRESHOLD,
@@ -71,11 +72,12 @@ def _log_phase4(score):
     )
 
 
-def _record_attempt(failure, patch, success, score=None):
+def _record_attempt(failure, patch, success, score=None, outcome=None):
     error_type, error_message, file = _signature(failure)
     if not error_type or not error_message:
         return
     phase4 = _phase4_summary(score or {}) if score else _fallback_phase4(failure)
+    outcome = outcome or ("passed" if success else "failed")
     try:
         add_record(
             {
@@ -89,14 +91,14 @@ def _record_attempt(failure, patch, success, score=None):
                 "score": phase4["confidence"],
                 "confidence": phase4["confidence"],
                 "score_signals": phase4["score_signals"],
-                "outcome": "passed" if success else "failed",
+                "outcome": outcome,
             }
         )
         log(
             "LEARNING: "
             f"cluster={phase4['cluster'] or 'unknown'} "
             f"confidence={phase4['confidence']:.2f} "
-            f"outcome={'passed' if success else 'failed'}"
+            f"outcome={outcome}"
         )
     except (OSError, ValueError):
         log("Memory write skipped")
@@ -135,12 +137,16 @@ def _template_patches(failure, memory):
 
 def _finish(success, metrics, started_at):
     elapsed_ms = max(0, round((time.monotonic() - started_at) * 1000))
+    fix_multiplication = metrics["propagated_fixes"] / max(1, metrics["attempts"])
     log(
         "METRICS: "
         f"attempts={metrics['attempts']} "
         f"model_calls={metrics['model_calls']} "
         f"memory_replays={metrics['memory_replays']} "
         f"context_tokens={metrics['context_tokens']} "
+        f"propagated_fixes={metrics['propagated_fixes']} "
+        f"regression_rejections={metrics['regression_rejections']} "
+        f"fix_multiplication={fix_multiplication:.2f} "
         f"elapsed_ms={elapsed_ms} "
         f"passed={str(success).lower()}"
     )
@@ -166,6 +172,11 @@ def _failing_test_nodes(failure):
     if node:
         nodes.add(f"{node[0]}::{node[1]}")
     return nodes
+
+
+def _failure_count(failure):
+    nodes = _failing_test_nodes(failure)
+    return len(nodes) if nodes else 1
 
 
 def _regression_nodes(repo_path, failure):
@@ -223,6 +234,37 @@ def _try_ranked_candidates(repo_path, failure, ranked, baseline_nodes):
     return "", None, applied_candidate
 
 
+def _log_root_causes(graph, failure):
+    nodes = _failing_test_nodes(failure)
+    if not nodes:
+        return
+    graph.update_after_test_run(failure)
+    causes = graph.get_root_causes(sorted(nodes))[:3]
+    if not causes:
+        return
+    summary = ",".join(f"{cause['node']}:{cause['score']:.2f}" for cause in causes)
+    log(f"PHASE5: root_causes={summary}")
+
+
+def _apply_generalizations(repo_path, patch, metrics):
+    candidates = patcher.safe_generalization_patches(repo_path, patch)
+    propagated = 0
+    for candidate in candidates:
+        if not patcher.apply_patch(repo_path, candidate):
+            continue
+        result = test_runner.run_tests(repo_path)
+        if result["passed"]:
+            propagated += 1
+            metrics["propagated_fixes"] += 1
+            continue
+        metrics["regression_rejections"] += 1
+        patcher.revert_patch(repo_path, candidate)
+    suggested = max(0, len(suggest_generalizations(repo_path, patch)) - propagated)
+    metrics["suggested_generalizations"] += suggested
+    log(f"GENERALIZATION: propagated={propagated} suggested={suggested}")
+    return propagated
+
+
 def _pytest_stop_reason(result):
     exit_code = result.get("exit_code", 1)
     if exit_code in (0, 1):
@@ -237,7 +279,11 @@ def run_agent(repo_path):
         "model_calls": 0,
         "memory_replays": 0,
         "context_tokens": 0,
+        "propagated_fixes": 0,
+        "suggested_generalizations": 0,
+        "regression_rejections": 0,
     }
+    graph = FailureGraph.build(repo_path)
     result = test_runner.run_tests(repo_path)
     if result["passed"]:
         log("SUCCESS: tests already pass")
@@ -251,6 +297,7 @@ def run_agent(repo_path):
         metrics["attempts"] += 1
         log(f"Fix attempt {step}/{MAX_STEPS}")
         failure = extract_failure(result)
+        _log_root_causes(graph, failure)
         memory = load_memory()
         memory_patches = _candidate_patches(
             failure, repo_path, memory, metrics, include_generated=False
@@ -287,6 +334,7 @@ def run_agent(repo_path):
             )
 
         if patch and candidate_result:
+            previous_failure_count = _failure_count(failure)
             result = candidate_result
             score = next(
                 (
@@ -296,10 +344,15 @@ def run_agent(repo_path):
                 ),
                 {},
             )
-            _record_attempt(failure, patch, result["passed"], score)
+            outcome = "passed" if result["passed"] else "failed"
+            if (
+                not result["passed"]
+                and _failure_count(extract_failure(result)) < previous_failure_count
+            ):
+                outcome = "partial"
+            _record_attempt(failure, patch, result["passed"], score, outcome=outcome)
             if result["passed"]:
-                generalizations = suggest_generalizations(repo_path, patch)
-                log(f"GENERALIZATION: suggestions={len(generalizations)}")
+                _apply_generalizations(repo_path, patch, metrics)
                 log("SUCCESS: tests pass")
                 return _finish(True, metrics, started_at)
             stop_reason = _pytest_stop_reason(result)
