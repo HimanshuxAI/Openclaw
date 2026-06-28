@@ -119,17 +119,21 @@ classify the failure
     ↓
 extract failing-test intent and patch confidence
     ↓
+rank likely root causes from the failure graph
+    ↓
 replay a high-confidence fix or retrieve relevant scopes
     ↓
 build template and generated patch candidates
     ↓
-score and rank candidates with learned per-cluster signal weights
+simulate impact and score candidates with learned per-cluster signal weights
     ↓
 validate, apply, and regression-check the best patch
     ↓
 run pytest again
     ↓
 record the verified outcome and scoring signals
+    ↓
+apply low-risk generalized fixes and verify
 ```
 
 The loop performs at most five fix attempts. Each attempt can change one
@@ -146,6 +150,21 @@ confidence combines safety, relevance, history, and intent signals with weights
 learned from prior outcomes in the same cluster. Successful one-line fixes are
 also scanned against the codebase so OpenClaw can report similar fix patterns
 instead of treating every failure as isolated.
+
+Phase 5 adds codebase-level reasoning without introducing a graph database. The
+new failure graph extracts static imports, function calls, test cases, and
+co-failing tests into adjacency lists. Before a patch is applied, OpenClaw
+simulates which files/functions are touched, which tests depend on them, how
+many similar patterns exist, and the resulting blast radius. Candidate ranking
+uses `final_score = confidence - risk_penalty`, so broad changes need stronger
+evidence than localized ones.
+
+After a successful patch, OpenClaw now filters similar one-line fixes through
+the same simulation. Low-risk generalized patches are applied automatically one
+at a time and immediately verified with pytest. If verification fails, the
+propagated patch is reverted and counted as a regression rejection. The metrics
+line includes propagated fixes, regression rejections, and fix multiplication so
+efficiency gains remain measurable.
 
 ## Quick Start
 
