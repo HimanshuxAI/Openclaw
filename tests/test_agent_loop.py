@@ -183,6 +183,56 @@ def test_run_agent_logs_phase_four_attempt_details(monkeypatch, tmp_path, capsys
     assert attempt["outcome"] == "passed"
 
 
+def test_run_agent_applies_safe_generalization_after_success(monkeypatch, tmp_path, capsys):
+    results = iter(
+        [
+            FAILURE,
+            {"passed": True, "output": "passed", "errors": "", "exit_code": 0},
+            {"passed": True, "output": "passed", "errors": "", "exit_code": 0},
+        ]
+    )
+    applied = []
+    monkeypatch.setattr(agent_loop.test_runner, "run_tests", lambda path: next(results))
+    monkeypatch.setattr(
+        agent_loop.patcher,
+        "generate_patch_candidates",
+        lambda failure, path, **kwargs: ["primary"],
+    )
+    monkeypatch.setattr(
+        agent_loop.patcher,
+        "rank_patch_candidates",
+        lambda path, patches, failure, memory=None: [
+            {
+                "patch": patches[0],
+                "score": {
+                    "confidence": 0.92,
+                    "cluster": "assertion",
+                    "signals": {"intent": 0.80},
+                    "intent": {"vector": ["expected", "5"]},
+                },
+            }
+        ],
+    )
+    monkeypatch.setattr(
+        agent_loop.patcher,
+        "safe_generalization_patches",
+        lambda path, patch: ["propagated"],
+    )
+    monkeypatch.setattr(agent_loop, "_regression_guard", lambda *args: True)
+    monkeypatch.setattr(
+        agent_loop.patcher,
+        "apply_patch",
+        lambda path, patch: applied.append(patch) or True,
+    )
+
+    assert agent_loop.run_agent(tmp_path) is True
+
+    output = capsys.readouterr().out
+    assert applied == ["primary", "propagated"]
+    assert "GENERALIZATION: propagated=1 suggested=0" in output
+    assert "fix_multiplication=1.00" in output
+
+
 def test_run_agent_rejects_regression_candidate_and_falls_back(monkeypatch, tmp_path):
     results = iter(
         [
