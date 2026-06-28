@@ -3,7 +3,10 @@ import subprocess
 from correctness import (
     cluster_failure,
     extract_test_intent,
+    impact_score,
     learned_signal_weights,
+    regression_risk,
+    simulate_patch,
     suggest_generalizations,
 )
 
