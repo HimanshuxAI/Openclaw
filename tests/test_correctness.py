@@ -55,6 +55,22 @@ def test_learned_signal_weights_move_toward_successful_predictors():
     assert weights["intent"] > weights["minimality"]
 
 
+def test_learned_signal_weights_ignore_partial_repairs():
+    memory = [
+        {
+            "cluster": "assertion",
+            "score_signals": {"minimality": 1.0, "relevance": 1.0},
+            "success": False,
+            "outcome": "partial",
+        }
+    ]
+
+    weights = learned_signal_weights(memory, "assertion")
+
+    assert weights["minimality"] == 0.18
+    assert weights["relevance"] == 0.16
+
+
 def test_suggest_generalizations_finds_same_line_replacement_elsewhere(git_repo):
     (git_repo / "alpha.py").write_text(
         "def total(items):\n    return len(items) + 1\n", encoding="utf-8"
@@ -79,3 +95,44 @@ def test_suggest_generalizations_finds_same_line_replacement_elsewhere(git_repo)
     assert "diff --git a/beta.py b/beta.py" in suggestions[0]
     assert "-    return len(items) + 1" in suggestions[0]
     assert "+    return len(items)" in suggestions[0]
+
+
+def test_simulate_patch_reports_dependents_patterns_and_risk(git_repo):
+    (git_repo / "service.py").write_text(
+        "def normalize(value):\n    return value.strip()\n", encoding="utf-8"
+    )
+    (git_repo / "api.py").write_text(
+        "from service import normalize\n\n"
+        "def clean(value):\n"
+        "    return normalize(value)\n",
+        encoding="utf-8",
+    )
+    tests = git_repo / "tests"
+    tests.mkdir()
+    (tests / "test_api.py").write_text(
+        "from api import clean\n\n"
+        "def test_clean():\n"
+        "    assert clean(' x ') == 'x'\n",
+        encoding="utf-8",
+    )
+    subprocess.run(["git", "-C", str(git_repo), "add", "."], check=True)
+    subprocess.run(["git", "-C", str(git_repo), "commit", "-qm", "simulation"], check=True)
+    patch = """diff --git a/service.py b/service.py
+--- a/service.py
++++ b/service.py
+@@ -1,2 +1,2 @@
+ def normalize(value):
+-    return value.strip()
++    return value.strip().lower()
+"""
+
+    simulation = simulate_patch(git_repo, patch)
+
+    assert simulation["touched_files"] == ["service.py"]
+    assert "function:service.py::normalize" in simulation["touched_nodes"]
+    assert "test_case:tests/test_api.py::test_clean" in simulation["dependent_tests"]
+    assert simulation["impact_score"] > 0
+    assert 0 <= simulation["regression_risk"] <= 1
+    assert simulation["pass_likelihood"] < 1
+    assert impact_score(git_repo, patch) == simulation["impact_score"]
+    assert regression_risk(git_repo, patch) == simulation["regression_risk"]
