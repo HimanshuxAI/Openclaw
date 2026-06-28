@@ -16,6 +16,8 @@ from correctness import (
     extract_test_intent,
     intent_signal,
     learned_signal_weights,
+    simulate_patch,
+    suggest_generalizations,
 )
 from llm_client import generate_nvidia_patch, generate_nvidia_patches
 from repo_manager import load_local_repo
@@ -27,6 +29,7 @@ PATCH_START = "OPENCLAW_PATCH_START"
 PATCH_END = "OPENCLAW_PATCH_END"
 MIN_PATCH_CONFIDENCE = 0.70
 MAX_CANDIDATES = 3
+MAX_GENERALIZATION_RISK = 0.20
 
 
 def mock_llm_fix(failure_text, code_context=""):
@@ -43,6 +46,11 @@ def mock_llm_fix_candidates(failure_text, code_context="", count=MAX_CANDIDATES)
         _, after_start = remainder.split(PATCH_START, 1)
         body, remainder = after_start.split(PATCH_END, 1)
         patch = body.strip("\r\n") + "\n"
+        diff_start = patch.find("diff --git ")
+        if diff_start > 0:
+            patch = patch[diff_start:]
+        if not patch.startswith("diff --git "):
+            continue
         if patch not in seen:
             seen.add(patch)
             candidates.append(patch)
@@ -301,17 +309,27 @@ def score_patch(repo_path, patch, failure, memory=None):
         "history": min(1.0, _history_bonus(patch, failure, memory) / 0.12),
         "intent": intent_signal(patch, failure),
     }
+    simulation = simulate_patch(repo, patch)
+    signals["impact"] = simulation["regression_risk"]
     weights = learned_signal_weights(memory or [], intent["cluster"])
     confidence = combine_score(signals, weights)
+    risk_penalty = round(min(0.35, simulation["regression_risk"] * 0.35), 6)
+    final_score = round(max(0.0, confidence - risk_penalty), 6)
+    accepted = final_score >= MIN_PATCH_CONFIDENCE
+    if simulation["impact_score"] >= 10 and confidence < 0.82:
+        accepted = False
     return {
         "confidence": confidence,
-        "accepted": confidence >= MIN_PATCH_CONFIDENCE,
+        "final_score": final_score,
+        "risk_penalty": risk_penalty,
+        "accepted": accepted,
         "target": target.as_posix(),
         "cluster": intent["cluster"],
         "intent": intent,
         "signals": signals,
         "weights": weights,
-        "reason": "accepted" if confidence >= MIN_PATCH_CONFIDENCE else "low confidence",
+        "simulation": simulation,
+        "reason": "accepted" if accepted else "low confidence or high impact",
     }
 
 
@@ -327,12 +345,27 @@ def rank_patch_candidates(repo_path, patches, failure, memory=None):
             ranked.append({"patch": patch, "score": score})
     ranked.sort(
         key=lambda candidate: (
-            candidate["score"]["confidence"],
+            candidate["score"].get("final_score", candidate["score"]["confidence"]),
             -sum(_patch_change_counts(candidate["patch"])),
         ),
         reverse=True,
     )
     return ranked
+
+
+def safe_generalization_patches(repo_path, successful_patch, limit=3):
+    safe = []
+    for patch in suggest_generalizations(repo_path, successful_patch, limit=limit):
+        score = score_patch(repo_path, patch, "AssertionError: generalized pattern")
+        simulation = score.get("simulation", {})
+        if (
+            score.get("accepted")
+            and score.get("final_score", 0.0) >= MIN_PATCH_CONFIDENCE
+            and simulation.get("regression_risk", 1.0) <= MAX_GENERALIZATION_RISK
+            and simulation.get("impact_score", 999.0) <= 4
+        ):
+            safe.append(patch)
+    return safe
 
 
 def _git_apply(repo, patch, check):
