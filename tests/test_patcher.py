@@ -47,6 +47,19 @@ def test_generate_patch_candidates_extracts_multiple_mock_patch_blocks():
     assert generate_patch_candidates(failure, "/unused") == [VALID_PATCH, second]
 
 
+def test_mock_llm_ignores_marker_fragments_without_unified_diff():
+    failure = (
+        "OPENCLAW_PATCH_START\n"
+        "print('not a diff')\n"
+        "OPENCLAW_PATCH_END\n"
+        "OPENCLAW_PATCH_START\n"
+        + VALID_PATCH
+        + "OPENCLAW_PATCH_END\n"
+    )
+
+    assert generate_patch_candidates(failure, "/unused") == [VALID_PATCH]
+
+
 def test_mock_llm_returns_empty_string_for_unknown_failure():
     assert mock_llm_fix("ordinary assertion failure") == ""
 
@@ -194,6 +207,36 @@ E       AssertionError: assert 'original' == 'fixed'
     assert score["signals"]["intent"] > 0
     assert score["weights"]["intent"] > score["weights"]["minimality"]
     assert score["accepted"] is True
+
+
+def test_score_patch_penalizes_high_blast_radius_changes(git_repo):
+    (git_repo / "shared.py").write_text(
+        "def normalize(value):\n    return value.strip()\n", encoding="utf-8"
+    )
+    for index in range(4):
+        (git_repo / f"consumer_{index}.py").write_text(
+            "from shared import normalize\n\n"
+            f"def clean_{index}(value):\n"
+            "    return normalize(value)\n",
+            encoding="utf-8",
+        )
+    subprocess.run(["git", "-C", str(git_repo), "add", "."], check=True)
+    subprocess.run(["git", "-C", str(git_repo), "commit", "-qm", "shared"], check=True)
+    patch = """diff --git a/shared.py b/shared.py
+--- a/shared.py
++++ b/shared.py
+@@ -1,2 +1,2 @@
+ def normalize(value):
+-    return value.strip()
++    return value.strip().lower()
+"""
+
+    score = score_patch(git_repo, patch, "AssertionError: normalize expected trim")
+
+    assert score["simulation"]["impact_score"] >= 4
+    assert score["signals"]["impact"] > 0
+    assert score["risk_penalty"] > 0
+    assert score["final_score"] < score["confidence"]
 
 
 @pytest.mark.parametrize(
