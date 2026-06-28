@@ -2,6 +2,7 @@ from collections import defaultdict
 from pathlib import Path, PurePosixPath
 import re
 
+from failure_graph import build_dependency_graph
 from rag.router import analyze_failure
 
 
@@ -116,6 +117,8 @@ def learned_signal_weights(memory, cluster):
     for record in memory or []:
         if record.get("cluster") != cluster or "score_signals" not in record:
             continue
+        if record.get("outcome") == "partial":
+            continue
         success = bool(record.get("success"))
         for signal in SIGNALS:
             value = float(record.get("score_signals", {}).get(signal, 0.0) or 0.0)
@@ -169,6 +172,20 @@ def _single_line_replacement(patch):
     return "", "", ""
 
 
+def _patch_targets(patch):
+    targets = []
+    for line in patch.splitlines():
+        if not line.startswith("diff --git "):
+            continue
+        parts = line.split()
+        if len(parts) != 4 or not parts[2].startswith("a/"):
+            continue
+        target = parts[2][2:]
+        if target and target not in targets:
+            targets.append(target)
+    return targets
+
+
 def _is_test_path(path):
     parts = PurePosixPath(path).parts
     return "tests" in parts or PurePosixPath(path).name.startswith("test_")
@@ -208,3 +225,44 @@ def suggest_generalizations(repo_path, successful_patch, limit=3):
         if len(suggestions) >= limit:
             break
     return suggestions
+
+
+def simulate_patch(repo_path, patch):
+    graph = build_dependency_graph(repo_path)
+    targets = _patch_targets(patch)
+    touched = []
+    for target in targets:
+        file_node = f"file:{target}"
+        if file_node in graph.nodes:
+            touched.append(file_node)
+        touched.extend(
+            sorted(node for node in graph.nodes if node.startswith(f"function:{target}::"))
+        )
+
+    dependents = set()
+    for node in touched:
+        dependents.update(graph.dependents_of(node))
+    dependent_tests = sorted(node for node in dependents if node.startswith("test_case:"))
+    dependent_nodes = sorted(dependents)
+    similar_patterns = suggest_generalizations(repo_path, patch)
+    criticality = max(1.0, len(dependent_tests) or len(dependent_nodes) / 2)
+    impact = round(len(dependent_nodes) * criticality, 6)
+    risk = round(min(1.0, (impact / 20) + (len(similar_patterns) * 0.03)), 6)
+    return {
+        "touched_files": targets,
+        "touched_nodes": sorted(dict.fromkeys(touched)),
+        "dependent_nodes": dependent_nodes,
+        "dependent_tests": dependent_tests,
+        "similar_patterns": len(similar_patterns),
+        "impact_score": impact,
+        "regression_risk": risk,
+        "pass_likelihood": round(max(0.0, 1.0 - risk), 6),
+    }
+
+
+def impact_score(repo_path, patch):
+    return simulate_patch(repo_path, patch)["impact_score"]
+
+
+def regression_risk(repo_path, patch):
+    return simulate_patch(repo_path, patch)["regression_risk"]
