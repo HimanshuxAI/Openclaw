@@ -75,3 +75,24 @@ def test_failure_graph_ranks_shared_root_causes_from_cofailures(git_repo):
     assert "test_case:tests/test_math.py::test_add_zero" in graph.get_related_nodes(
         "test_case:tests/test_math.py::test_add_positive"
     )
+
+
+def test_failure_graph_tracks_change_frequency_and_centrality(git_repo):
+    (git_repo / "core.py").write_text(
+        "def parse(value):\n    return value\n", encoding="utf-8"
+    )
+    (git_repo / "api.py").write_text(
+        "from core import parse\n\n"
+        "def handle(value):\n"
+        "    return parse(value)\n",
+        encoding="utf-8",
+    )
+    subprocess.run(["git", "-C", str(git_repo), "add", "."], check=True)
+    subprocess.run(["git", "-C", str(git_repo), "commit", "-qm", "centrality"], check=True)
+    graph = FailureGraph.build(git_repo)
+
+    graph.update_after_change({"files": ["core.py"], "functions": ["core.py::parse"]})
+
+    assert graph.change_counts["file:core.py"] == 1
+    assert graph.change_counts["function:core.py::parse"] == 1
+    assert graph.dependency_centrality("file:core.py") > 0
