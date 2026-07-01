@@ -15,6 +15,7 @@ class FailureGraph:
     reverse_edges: dict = field(default_factory=lambda: defaultdict(lambda: defaultdict(set)))
     function_names: dict = field(default_factory=lambda: defaultdict(set))
     failure_counts: dict = field(default_factory=lambda: defaultdict(int))
+    change_counts: dict = field(default_factory=lambda: defaultdict(int))
 
     @classmethod
     def build(cls, repo_path):
@@ -49,11 +50,26 @@ class FailureGraph:
         for node in failed:
             self.nodes.add(node)
             self.failure_counts[node] += 1
+            for upstream in self._upstream_nodes(node):
+                self.failure_counts[upstream] += 1
+                if upstream.startswith("function:") and "::" in upstream:
+                    file_path = upstream.removeprefix("function:").split("::", 1)[0]
+                    self.failure_counts[f"file:{file_path}"] += 1
         for index, source in enumerate(failed):
             for target in failed[index + 1 :]:
                 self._add_edge(source, "co-fails-with", target)
                 self._add_edge(target, "co-fails-with", source)
         self._rebuild_reverse_edges()
+
+    def update_after_change(self, change_set):
+        for file_path in change_set.get("files", []):
+            node = file_path if file_path.startswith("file:") else f"file:{file_path}"
+            self.nodes.add(node)
+            self.change_counts[node] += 1
+        for function in change_set.get("functions", []):
+            node = function if function.startswith("function:") else f"function:{function}"
+            self.nodes.add(node)
+            self.change_counts[node] += 1
 
     def get_related_nodes(self, node):
         related = set()
@@ -75,6 +91,11 @@ class FailureGraph:
                     seen.add(source)
                     pending.append(source)
         return seen
+
+    def dependency_centrality(self, node):
+        related = set(self.dependents_of(node))
+        related.update(self.edges.get(node, {}).get("affects", set()))
+        return len(related)
 
     def get_root_causes(self, failures):
         failed_nodes = [
