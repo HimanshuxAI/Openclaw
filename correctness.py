@@ -266,3 +266,25 @@ def impact_score(repo_path, patch):
 
 def regression_risk(repo_path, patch):
     return simulate_patch(repo_path, patch)["regression_risk"]
+
+
+def prediction_accuracy(records):
+    correct = sum(record.get("correct_predictions", 0) for record in records)
+    false_positives = sum(record.get("false_positives", 0) for record in records)
+    false_negatives = sum(record.get("false_negatives", 0) for record in records)
+    total_predictions = correct + false_positives
+    total_actual = correct + false_negatives
+    return {
+        "prediction_accuracy": round(
+            correct / total_predictions if total_predictions else 1.0,
+            6,
+        ),
+        "false_positive_rate": round(
+            false_positives / total_predictions if total_predictions else 0.0,
+            6,
+        ),
+        "false_negative_rate": round(
+            false_negatives / total_actual if total_actual else 0.0,
+            6,
+        ),
+    }
