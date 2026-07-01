@@ -2,6 +2,7 @@ import subprocess
 
 from correctness import (
     cluster_failure,
+    prediction_accuracy,
     extract_test_intent,
     impact_score,
     learned_signal_weights,
@@ -69,6 +70,19 @@ def test_learned_signal_weights_ignore_partial_repairs():
 
     assert weights["minimality"] == 0.18
     assert weights["relevance"] == 0.16
+
+
+def test_prediction_accuracy_summarizes_false_positive_and_negative_rates():
+    metrics = prediction_accuracy(
+        [
+            {"correct_predictions": 2, "false_positives": 1, "false_negatives": 1},
+            {"correct_predictions": 1, "false_positives": 0, "false_negatives": 2},
+        ]
+    )
+
+    assert metrics["prediction_accuracy"] == 0.75
+    assert metrics["false_positive_rate"] == 0.25
+    assert metrics["false_negative_rate"] == 0.5
 
 
 def test_suggest_generalizations_finds_same_line_replacement_elsewhere(git_repo):
