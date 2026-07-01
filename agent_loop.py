@@ -294,6 +294,71 @@ def _apply_generalizations(repo_path, patch, metrics):
     return propagated
 
 
+def _prediction_failure_text(prediction):
+    tests = "\n".join(
+        f"FAILED {node} - predicted risk" for node in prediction["predicted_tests"]
+    )
+    modules = ", ".join(prediction["at_risk_modules"]) or "unknown"
+    return f"PREEMPTIVE_RISK modules={modules}\n{tests}".strip()
+
+
+def _run_preemptive_prediction(repo_path, graph, memory, metrics):
+    started = time.monotonic()
+    change_set = predictor.detect_change_set(repo_path)
+    if not change_set.get("files") and not change_set.get("functions"):
+        return None
+    graph.update_after_change(change_set)
+    prediction = predictor.predict_failures(change_set, graph=graph, memory=memory)
+    metrics["prediction_latency_ms"] += max(
+        0, round((time.monotonic() - started) * 1000)
+    )
+    log(
+        "PHASE6: "
+        f"predicted_tests={len(prediction['predicted_tests'])} "
+        f"risk={prediction['risk_score']:.2f} "
+        f"confidence={prediction['confidence']:.2f}"
+    )
+    if prediction["risk_score"] < predictor.RISK_THRESHOLD:
+        return prediction
+
+    metrics["preemptive_attempts"] += 1
+    failure_text = _prediction_failure_text(prediction)
+    generation_metrics = {}
+    patches = patcher.generate_patch_candidates(
+        failure_text,
+        repo_path,
+        metrics=generation_metrics,
+        memory=memory,
+    )
+    metrics["model_calls"] += generation_metrics.get("model_calls", 0)
+    metrics["context_tokens"] += generation_metrics.get("context_tokens", 0)
+    ranked = patcher.rank_patch_candidates(repo_path, patches, failure_text, memory=memory)
+    if not ranked:
+        return prediction
+    candidate = ranked[0]
+    if not patcher.apply_patch(repo_path, candidate["patch"]):
+        return prediction
+    result = test_runner.run_tests(repo_path)
+    if result["passed"]:
+        metrics["preemptive_successes"] += 1
+        return prediction
+    metrics["regression_rejections"] += 1
+    patcher.revert_patch(repo_path, candidate["patch"])
+    return prediction
+
+
+def _record_prediction_outcome(prediction, result, metrics):
+    if not prediction:
+        return
+    calibration = predictor.update_prediction_accuracy(
+        prediction,
+        extract_failure(result),
+    )
+    metrics["prediction_correct"] += calibration["correct_predictions"]
+    metrics["prediction_false_positive"] += calibration["false_positives"]
+    metrics["prediction_false_negative"] += calibration["false_negatives"]
+
+
 def _pytest_stop_reason(result):
     exit_code = result.get("exit_code", 1)
     if exit_code in (0, 1):
