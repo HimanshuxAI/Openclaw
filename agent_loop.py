@@ -373,12 +373,21 @@ def run_agent(repo_path):
         "model_calls": 0,
         "memory_replays": 0,
         "context_tokens": 0,
+        "preemptive_attempts": 0,
+        "preemptive_successes": 0,
+        "prediction_correct": 0,
+        "prediction_false_positive": 0,
+        "prediction_false_negative": 0,
+        "prediction_latency_ms": 0,
         "propagated_fixes": 0,
         "suggested_generalizations": 0,
         "regression_rejections": 0,
     }
     graph = FailureGraph.build(repo_path)
+    memory = load_memory()
+    prediction = _run_preemptive_prediction(repo_path, graph, memory, metrics)
     result = test_runner.run_tests(repo_path)
+    _record_prediction_outcome(prediction, result, metrics)
     if result["passed"]:
         log("SUCCESS: tests already pass")
         return _finish(True, metrics, started_at)
