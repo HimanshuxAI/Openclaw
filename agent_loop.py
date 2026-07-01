@@ -139,12 +139,40 @@ def _template_patches(failure, memory):
 def _finish(success, metrics, started_at):
     elapsed_ms = max(0, round((time.monotonic() - started_at) * 1000))
     fix_multiplication = metrics["propagated_fixes"] / max(1, metrics["attempts"])
+    prediction_total = metrics["prediction_correct"] + metrics["prediction_false_positive"]
+    prediction_accuracy = (
+        metrics["prediction_correct"] / prediction_total
+        if prediction_total
+        else 1.0
+    )
+    false_positive_rate = (
+        metrics["prediction_false_positive"] / prediction_total
+        if prediction_total
+        else 0.0
+    )
+    actual_total = metrics["prediction_correct"] + metrics["prediction_false_negative"]
+    false_negative_rate = (
+        metrics["prediction_false_negative"] / actual_total
+        if actual_total
+        else 0.0
+    )
+    prevention_rate = (
+        metrics["preemptive_successes"] / metrics["preemptive_attempts"]
+        if metrics["preemptive_attempts"]
+        else 0.0
+    )
     log(
         "METRICS: "
         f"attempts={metrics['attempts']} "
         f"model_calls={metrics['model_calls']} "
         f"memory_replays={metrics['memory_replays']} "
         f"context_tokens={metrics['context_tokens']} "
+        f"preemptive_attempts={metrics['preemptive_attempts']} "
+        f"prevention_rate={prevention_rate:.2f} "
+        f"prediction_accuracy={prediction_accuracy:.2f} "
+        f"false_positive_rate={false_positive_rate:.2f} "
+        f"false_negative_rate={false_negative_rate:.2f} "
+        f"prediction_latency_ms={metrics['prediction_latency_ms']} "
         f"propagated_fixes={metrics['propagated_fixes']} "
         f"regression_rejections={metrics['regression_rejections']} "
         f"fix_multiplication={fix_multiplication:.2f} "
