@@ -20,6 +20,8 @@ small, bounded repair loop and leaves every applied change visible in Git.
 - Learns which scoring signals predict success for each failure cluster.
 - Builds a lightweight failure graph across files, functions, and tests.
 - Simulates patch impact before applying a candidate and penalizes risky edits.
+- Predicts risky changed files before the first pytest run and can try a
+  conservative preemptive patch when risk is high.
 - Preflights one-file, one-hunk Python patches before they touch the repository.
 - Runs a small regression guard on previously passing tests before the full rerun.
 - Rolls back weak candidates and falls through to the next ranked patch.
@@ -111,6 +113,10 @@ inspectable, and bounded.
 ## How It Works
 
 ```text
+detect local code changes
+    ↓
+predict risky tests/modules and optional preemptive patch
+    ↓
 run pytest
     ↓
 extract the failure
@@ -165,6 +171,15 @@ at a time and immediately verified with pytest. If verification fails, the
 propagated patch is reverted and counted as a regression rejection. The metrics
 line includes propagated fixes, regression rejections, and fix multiplication so
 efficiency gains remain measurable.
+
+Phase 6 adds preventive prediction ahead of the normal test run. OpenClaw reads
+the current Python diff, updates change-frequency counters in the failure graph,
+and predicts likely failing tests from historical failures, change frequency,
+and dependency centrality. High-risk changes can trigger one preemptive patch
+candidate before the first normal pytest run, but that patch is still simulated,
+applied through the normal safety checks, and validated with pytest. Prediction
+metrics track prevention rate, prediction accuracy, false-positive rate,
+false-negative rate, and added prediction latency.
 
 ## Quick Start
 
