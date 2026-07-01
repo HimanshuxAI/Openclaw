@@ -2,6 +2,7 @@ import re
 import time
 
 import patcher
+import predictor
 import test_runner
 from correctness import cluster_failure, extract_test_intent, suggest_generalizations
 from failure_graph import FailureGraph
