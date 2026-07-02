@@ -288,3 +288,21 @@ def prediction_accuracy(records):
             6,
         ),
     }
+
+
+def decision_metrics(records):
+    prevented = sum(1 for record in records if record.get("outcome") == "prevented")
+    unnecessary = sum(1 for record in records if record.get("outcome") == "unnecessary")
+    total_actions = prevented + unnecessary
+    return {
+        "decision_accuracy": round(
+            prevented / total_actions if total_actions else 1.0,
+            6,
+        ),
+        "prevented_failures": prevented,
+        "unnecessary_actions": unnecessary,
+        "cost_saved": round(
+            sum(float(record.get("cost_saved", 0.0) or 0.0) for record in records),
+            6,
+        ),
+    }
