@@ -42,12 +42,27 @@ def predict_failures(change_set, graph=None, memory=None):
             if dependent.startswith("test_case:"):
                 predicted.add(dependent.removeprefix("test_case:"))
     risk_score = compute_risk_score(change_set, graph=graph, memory=memory)
-    confidence = _confidence(predicted, changed_nodes, graph)
+    confidence = round(
+        _confidence(predicted, changed_nodes, graph) * calibration_factor(memory),
+        6,
+    )
+    failure_frequency = _failure_frequency(changed_nodes, graph, memory)
+    change_frequency = _change_frequency(changed_nodes, graph)
+    dependency_centrality = _dependency_centrality(changed_nodes, graph)
     return {
         "predicted_tests": sorted(predicted),
         "at_risk_modules": sorted(dict.fromkeys(at_risk_modules)),
         "risk_score": risk_score,
         "confidence": confidence,
+        "change_frequency": change_frequency,
+        "failure_frequency": failure_frequency,
+        "dependency_centrality": dependency_centrality,
+        "estimated_fix_cost": _estimated_fix_cost(changed_nodes, dependency_centrality),
+        "estimated_failure_cost": _estimated_failure_cost(
+            predicted,
+            failure_frequency,
+            dependency_centrality,
+        ),
     }
 
 
@@ -109,6 +124,19 @@ def update_prediction_accuracy(predictions, outcomes):
     }
 
 
+def calibration_factor(records):
+    values = [
+        float(record.get("prediction_accuracy"))
+        for record in records or []
+        if isinstance(record, dict) and record.get("prediction_accuracy") is not None
+    ]
+    if not values:
+        return 1.0
+    recent = values[-10:]
+    average = sum(recent) / len(recent)
+    return round(max(0.25, min(1.25, 0.5 + average)), 6)
+
+
 def _changed_nodes(change_set):
     nodes = []
     for file_path in change_set.get("files", []):
@@ -143,3 +171,39 @@ def _impacted_nodes(graph, node):
     for target in direct:
         impacted.update(graph.dependents_of(target))
     return impacted
+
+
+def _failure_frequency(changed_nodes, graph, memory):
+    historical = _historical_failures(memory or [])
+    return sum(
+        max(graph.failure_counts.get(node, 0), historical.get(node, 0))
+        for node in changed_nodes
+    )
+
+
+def _change_frequency(changed_nodes, graph):
+    return sum(graph.change_counts.get(node, 0) + 1 for node in changed_nodes)
+
+
+def _dependency_centrality(changed_nodes, graph):
+    return sum(graph.dependency_centrality(node) for node in changed_nodes)
+
+
+def _estimated_fix_cost(changed_nodes, dependency_centrality):
+    return round(
+        min(2.0, 0.25 + len(changed_nodes) * 0.15 + dependency_centrality * 0.03),
+        6,
+    )
+
+
+def _estimated_failure_cost(predicted, failure_frequency, dependency_centrality):
+    return round(
+        min(
+            5.0,
+            1.0
+            + len(predicted) * 0.35
+            + failure_frequency * 0.25
+            + dependency_centrality * 0.05,
+        ),
+        6,
+    )
