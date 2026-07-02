@@ -100,6 +100,57 @@ def test_run_agent_runs_preemptive_prediction_before_tests(monkeypatch, tmp_path
     assert "preemptive_attempts=1" in output
 
 
+def test_run_agent_routes_phase_seven_decisions(monkeypatch, tmp_path, capsys):
+    calls = []
+    monkeypatch.setattr(
+        agent_loop.predictor,
+        "detect_change_set",
+        lambda path: {"files": ["service.py"], "functions": []},
+    )
+    monkeypatch.setattr(
+        agent_loop.predictor,
+        "predict_failures",
+        lambda change_set, graph=None, memory=None: {
+            "predicted_tests": ["tests/test_service.py::test_normalize"],
+            "at_risk_modules": ["service.py"],
+            "risk_score": 0.55,
+            "confidence": 0.55,
+            "change_frequency": 1,
+            "failure_frequency": 1,
+            "dependency_centrality": 1,
+            "estimated_fix_cost": 0.6,
+            "estimated_failure_cost": 1.5,
+        },
+    )
+    monkeypatch.setattr(
+        agent_loop.test_runner,
+        "run_test_subset",
+        lambda path, nodes: calls.append(("subset", tuple(nodes))) or {
+            "passed": True,
+            "output": "",
+            "errors": "",
+            "exit_code": 0,
+        },
+    )
+    monkeypatch.setattr(
+        agent_loop.test_runner,
+        "run_tests",
+        lambda path: calls.append(("full", ())) or {
+            "passed": True,
+            "output": "",
+            "errors": "",
+            "exit_code": 0,
+        },
+    )
+
+    assert agent_loop.run_agent(tmp_path) is True
+
+    output = capsys.readouterr().out
+    assert ("subset", ("tests/test_service.py::test_normalize",)) in calls
+    assert "PHASE7: prediction=risk=0.55,confidence=0.55 decision=VALIDATE" in output
+    assert "decision_validate_runs=1" in output
+
+
 def test_run_agent_stops_before_generation_when_pytest_collects_no_tests(
     monkeypatch, tmp_path, capsys
 ):
