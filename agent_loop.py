@@ -1,6 +1,7 @@
 import re
 import time
 
+import decision_engine
 import patcher
 import predictor
 import test_runner
@@ -161,6 +162,12 @@ def _finish(success, metrics, started_at):
         if metrics["preemptive_attempts"]
         else 0.0
     )
+    decision_total = metrics["decision_correct"] + metrics["unnecessary_actions"]
+    decision_accuracy = (
+        metrics["decision_correct"] / decision_total
+        if decision_total
+        else 1.0
+    )
     log(
         "METRICS: "
         f"attempts={metrics['attempts']} "
@@ -173,6 +180,11 @@ def _finish(success, metrics, started_at):
         f"false_positive_rate={false_positive_rate:.2f} "
         f"false_negative_rate={false_negative_rate:.2f} "
         f"prediction_latency_ms={metrics['prediction_latency_ms']} "
+        f"decision_accuracy={decision_accuracy:.2f} "
+        f"prevented_failures={metrics['prevented_failures']} "
+        f"unnecessary_actions={metrics['unnecessary_actions']} "
+        f"cost_saved={metrics['cost_saved']:.2f} "
+        f"decision_validate_runs={metrics['decision_validate_runs']} "
         f"propagated_fixes={metrics['propagated_fixes']} "
         f"regression_rejections={metrics['regression_rejections']} "
         f"fix_multiplication={fix_multiplication:.2f} "
@@ -318,7 +330,22 @@ def _run_preemptive_prediction(repo_path, graph, memory, metrics):
         f"risk={prediction['risk_score']:.2f} "
         f"confidence={prediction['confidence']:.2f}"
     )
-    if prediction["risk_score"] < predictor.RISK_THRESHOLD:
+    decision = decision_engine.evaluate(prediction)
+    log(
+        "PHASE7: "
+        f"prediction=risk={prediction['risk_score']:.2f},"
+        f"confidence={prediction['confidence']:.2f} "
+        f"decision={decision['decision']} "
+        f"expected_loss={decision['expected_failure_loss']:.2f} "
+        f"action_cost={decision['expected_action_cost']:.2f}"
+    )
+    if decision["decision"] == decision_engine.SKIP:
+        metrics["decision_skips"] += 1
+        return prediction
+    if decision["decision"] == decision_engine.VALIDATE:
+        metrics["decision_validate_runs"] += 1
+        if prediction["predicted_tests"]:
+            test_runner.run_test_subset(repo_path, prediction["predicted_tests"])
         return prediction
 
     metrics["preemptive_attempts"] += 1
@@ -341,8 +368,15 @@ def _run_preemptive_prediction(repo_path, graph, memory, metrics):
     result = test_runner.run_tests(repo_path)
     if result["passed"]:
         metrics["preemptive_successes"] += 1
+        metrics["prevented_failures"] += 1
+        metrics["decision_correct"] += 1
+        metrics["cost_saved"] += max(
+            0.0,
+            decision["expected_failure_loss"] - decision["expected_action_cost"],
+        )
         return prediction
     metrics["regression_rejections"] += 1
+    metrics["unnecessary_actions"] += 1
     patcher.revert_patch(repo_path, candidate["patch"])
     return prediction
 
@@ -379,6 +413,12 @@ def run_agent(repo_path):
         "prediction_false_positive": 0,
         "prediction_false_negative": 0,
         "prediction_latency_ms": 0,
+        "decision_correct": 0,
+        "decision_skips": 0,
+        "decision_validate_runs": 0,
+        "prevented_failures": 0,
+        "unnecessary_actions": 0,
+        "cost_saved": 0.0,
         "propagated_fixes": 0,
         "suggested_generalizations": 0,
         "regression_rejections": 0,
