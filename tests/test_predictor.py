@@ -2,6 +2,7 @@ import subprocess
 
 from failure_graph import FailureGraph
 from predictor import (
+    calibration_factor,
     compute_risk_score,
     identify_hotspots,
     predict_failures,
@@ -35,6 +36,10 @@ def test_predict_failures_uses_changed_nodes_history_and_dependents(git_repo):
     assert prediction["at_risk_modules"] == ["service.py"]
     assert prediction["risk_score"] > 0.5
     assert prediction["confidence"] > 0
+    assert prediction["failure_frequency"] > 0
+    assert prediction["change_frequency"] > 0
+    assert prediction["dependency_centrality"] > 0
+    assert prediction["estimated_failure_cost"] > prediction["estimated_fix_cost"]
 
 
 def test_compute_risk_score_increases_for_hot_changed_files():
@@ -76,3 +81,44 @@ def test_update_prediction_accuracy_reports_calibration_counts():
     assert metrics["false_positives"] == 1
     assert metrics["false_negatives"] == 1
     assert metrics["prediction_accuracy"] == 0.5
+
+
+def test_calibration_factor_reduces_confidence_after_bad_predictions():
+    factor = calibration_factor(
+        [
+            {"prediction_accuracy": 0.25},
+            {"prediction_accuracy": 0.50},
+        ]
+    )
+
+    assert 0 < factor < 1
+
+
+def test_predict_failures_applies_calibration_factor_to_confidence(git_repo):
+    (git_repo / "service.py").write_text(
+        "def normalize(value):\n    return value.strip()\n", encoding="utf-8"
+    )
+    tests = git_repo / "tests"
+    tests.mkdir()
+    (tests / "test_service.py").write_text(
+        "from service import normalize\n\n"
+        "def test_normalize():\n"
+        "    assert normalize(' x ') == 'x'\n",
+        encoding="utf-8",
+    )
+    subprocess.run(["git", "-C", str(git_repo), "add", "."], check=True)
+    subprocess.run(["git", "-C", str(git_repo), "commit", "-qm", "calibrate"], check=True)
+    graph = FailureGraph.build(git_repo)
+    graph.update_after_change({"files": ["service.py"]})
+    graph.update_after_test_run(
+        "FAILED tests/test_service.py::test_normalize - AssertionError"
+    )
+
+    raw = predict_failures({"files": ["service.py"]}, graph=graph)
+    calibrated = predict_failures(
+        {"files": ["service.py"]},
+        graph=graph,
+        memory=[{"prediction_accuracy": 0.25}],
+    )
+
+    assert calibrated["confidence"] < raw["confidence"]
