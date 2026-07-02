@@ -2,6 +2,7 @@ import subprocess
 
 from correctness import (
     cluster_failure,
+    decision_metrics,
     prediction_accuracy,
     extract_test_intent,
     impact_score,
@@ -83,6 +84,21 @@ def test_prediction_accuracy_summarizes_false_positive_and_negative_rates():
     assert metrics["prediction_accuracy"] == 0.75
     assert metrics["false_positive_rate"] == 0.25
     assert metrics["false_negative_rate"] == 0.5
+
+
+def test_decision_metrics_summarize_cost_and_action_quality():
+    metrics = decision_metrics(
+        [
+            {"decision": "ACT", "outcome": "prevented", "cost_saved": 1.5},
+            {"decision": "ACT", "outcome": "unnecessary", "cost_saved": -0.5},
+            {"decision": "VALIDATE", "outcome": "validated", "cost_saved": 0.0},
+        ]
+    )
+
+    assert metrics["decision_accuracy"] == 0.5
+    assert metrics["prevented_failures"] == 1
+    assert metrics["unnecessary_actions"] == 1
+    assert metrics["cost_saved"] == 1.0
 
 
 def test_suggest_generalizations_finds_same_line_replacement_elsewhere(git_repo):
