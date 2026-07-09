@@ -21,7 +21,7 @@ __all__ = [
 def select_strategy(action, history, repository_id):
     """Choose the best verified local strategy without generating a patch."""
     rates = _verified_rates(action, history, repository_id)
-    if not rates:
+    if not rates or max(rates.values()) <= 0:
         return minimal_patch
     return max(rates, key=lambda name: (rates[name], name))
 

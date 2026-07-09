@@ -11,30 +11,63 @@ def _root():
     return Path(os.environ["OPENCLAW_PHASE9_MEMORY_DIR"])
 
 
-def _record(run_id="run-1", **overrides):
-    record = {
-        "run_id": run_id,
+def _record(name, **overrides):
+    common = {
+        "run_id": "run-1",
         "repository_id": "repo-a",
         "plan_id": "plan-1",
-        "strategy": "guard_clause",
-        "verified": True,
     }
+    records = {
+        "decisions": common
+        | {
+            "proposed_action": "ACT",
+            "action_taken": "ACT",
+            "verification_state": "passed",
+            "evidence_score": 0.8,
+            "uncertainty": "low",
+            "reason": "verified",
+        },
+        "plans": common
+        | {
+            "action": "ACT",
+            "strategy": "minimal_patch",
+            "candidate_count": 1,
+            "reversible": True,
+            "executable": True,
+            "steps": ["analyze_context", "verify_scope"],
+            "impact_score": 1.0,
+            "regression_risk": 0.1,
+            "pass_likelihood": 0.9,
+        },
+        "failures": common
+        | {
+            "verification_state": "failed",
+            "reason": "test_failure",
+            "tool_contract_failures": ["invalid_test_result"],
+        },
+        "strategies": common
+        | {
+            "strategy": "guard_clause",
+            "action_taken": "ACT",
+            "verified": True,
+            "failure_cost_saved": 1.5,
+            "action_cost": 0.3,
+        },
+    }
+    record = records[name].copy()
     record.update(overrides)
     return record
 
 
-def test_phase9_records_round_trip_in_separate_source_free_jsonl_logs():
-    strategy = _record()
-    decision = _record(run_id="run-2", decision="ACT")
+@pytest.mark.parametrize("name", sorted(phase9.LOG_NAMES))
+def test_phase9_records_round_trip_in_separate_source_free_jsonl_logs(name):
+    record = _record(name)
 
-    phase9.append_record("strategies", strategy)
-    phase9.append_record("decisions", decision)
+    phase9.append_record(name, record)
 
     assert phase9.default_root() == _root()
-    assert phase9.load_records("strategies") == [strategy]
-    assert phase9.load_records("decisions") == [decision]
-    assert json.loads((_root() / "strategies.jsonl").read_text(encoding="utf-8")) == strategy
-    assert json.loads((_root() / "decisions.jsonl").read_text(encoding="utf-8")) == decision
+    assert phase9.load_records(name) == [record]
+    assert json.loads((_root() / f"{name}.jsonl").read_text(encoding="utf-8")) == record
 
 
 def test_phase9_load_records_treats_missing_and_malformed_content_as_empty_history():
@@ -50,7 +83,7 @@ def test_phase9_load_records_treats_missing_and_malformed_content_as_empty_histo
 
 def test_phase9_load_records_skips_malformed_entries_without_losing_valid_history():
     path = _root() / "plans.jsonl"
-    record = _record()
+    record = _record("plans")
     path.parent.mkdir(parents=True)
     path.write_text(
         "not valid json\n" + json.dumps(record) + "\n" + json.dumps({"run_id": 3}) + "\n",
@@ -62,7 +95,7 @@ def test_phase9_load_records_skips_malformed_entries_without_losing_valid_histor
 
 def test_phase9_load_records_skips_deeply_nested_json_and_keeps_valid_history():
     path = _root() / "plans.jsonl"
-    valid_record = _record(run_id="valid-run")
+    valid_record = _record("plans", run_id="valid-run")
     deeply_nested_record = (
         '{"run_id":"deep-run","details":'
         + '{"details":' * 500
@@ -79,26 +112,43 @@ def test_phase9_load_records_skips_deeply_nested_json_and_keeps_valid_history():
     assert phase9.load_records("plans") == [valid_record]
 
 
-def test_phase9_append_uses_atomic_replace_and_stores_independent_copies(monkeypatch):
-    record = _record(details={"state": "original"})
-    path = _root() / "strategies.jsonl"
+def test_phase9_append_uses_a_lock_unique_temp_and_keeps_sequential_appends(monkeypatch):
+    lock_calls = []
     replacements = []
+    temporary_paths = []
+    original_flock = phase9.fcntl.flock
     original_replace = phase9.os.replace
+    original_mkstemp = phase9.tempfile.mkstemp
+
+    def capture_flock(handle, operation):
+        lock_calls.append(operation)
+        return original_flock(handle, operation)
 
     def capture_replace(temporary, destination):
         replacements.append((Path(temporary), Path(destination)))
-        original_replace(temporary, destination)
+        return original_replace(temporary, destination)
 
+    def capture_mkstemp(*args, **kwargs):
+        descriptor, temporary = original_mkstemp(*args, **kwargs)
+        temporary_paths.append(Path(temporary))
+        return descriptor, temporary
+
+    monkeypatch.setattr(phase9.fcntl, "flock", capture_flock)
     monkeypatch.setattr(phase9.os, "replace", capture_replace)
+    monkeypatch.setattr(phase9.tempfile, "mkstemp", capture_mkstemp)
 
-    phase9.append_record("strategies", record)
-    record["details"]["state"] = "mutated"
-    loaded = phase9.load_records("strategies")
-    loaded[0]["details"]["state"] = "changed after read"
+    first = _record("strategies", run_id="run-1")
+    second = _record("strategies", run_id="run-2")
+    phase9.append_record("strategies", first)
+    phase9.append_record("strategies", second)
 
-    assert replacements == [(path.with_suffix(".jsonl.tmp"), path)]
-    assert not path.with_suffix(".jsonl.tmp").exists()
-    assert phase9.load_records("strategies") == [_record(details={"state": "original"})]
+    assert phase9.load_records("strategies") == [first, second]
+    assert len(set(temporary_paths)) == 2
+    assert all(path.parent == _root() for path in temporary_paths)
+    assert all(not path.exists() for path in temporary_paths)
+    assert len(replacements) == 2
+    assert phase9.fcntl.LOCK_EX in lock_calls
+    assert phase9.fcntl.LOCK_UN in lock_calls
 
 
 @pytest.mark.parametrize("name", ["unknown", "", None, 3])
@@ -106,33 +156,31 @@ def test_phase9_rejects_invalid_log_names(name):
     with pytest.raises(ValueError):
         phase9.load_records(name)
     with pytest.raises(ValueError):
-        phase9.append_record(name, _record())
+        phase9.append_record(name, _record("plans"))
 
 
 @pytest.mark.parametrize(
-    "record",
+    ("name", "record"),
     [
-        [],
-        {},
-        {"run_id": 3},
-        {"run_id": "run-1", "repository_id": 3},
-        {"run_id": "run-1", "patch": "diff --git a/file.py"},
-        {"run_id": "run-1", "source": "VALUE = 1"},
-        {"run_id": "run-1", "code": "VALUE = 1"},
-        {"run_id": "run-1", "code_context": "line 1"},
-        {"run_id": "run-1", "details": {"code": "VALUE = 1"}},
-        {"run_id": "run-1", "details": object()},
-        {"run_id": "run-1", "metric": float("nan")},
+        ("plans", {"run_id": "run-1"}),
+        ("decisions", _record("decisions", diff="def leaked(): pass")),
+        (
+            "plans",
+            _record("plans", candidate_text="def leaked(): pass"),
+        ),
+        ("failures", _record("failures", tool_contract_failures=["invalid result"])),
+        ("strategies", _record("strategies", verified=1)),
+        ("strategies", _record("strategies", action_cost=float("nan"))),
     ],
 )
-def test_phase9_rejects_invalid_or_source_bearing_records(record):
+def test_phase9_rejects_unknown_source_bearing_or_schema_invalid_records(name, record):
     with pytest.raises(ValueError, match="Invalid Phase 9 record"):
-        phase9.append_record("plans", record)
+        phase9.append_record(name, record)
 
 
 def test_phase9_rejects_cyclic_records_as_non_json():
-    record = _record()
-    record["details"] = record
+    record = _record("plans")
+    record["steps"].append(record)
 
     with pytest.raises(ValueError, match="Invalid Phase 9 record"):
         phase9.append_record("plans", record)

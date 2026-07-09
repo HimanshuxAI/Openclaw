@@ -92,3 +92,16 @@ def test_strategy_selection_falls_back_without_matching_history_and_never_mutate
     assert strategies.select_strategy("ACT", history, "repo-a") == "minimal_patch"
     assert strategies.select_strategy("ACT", None, "repo-a") == "minimal_patch"
     assert history == expected
+
+
+def test_strategy_selection_falls_back_when_matching_history_has_no_verified_success():
+    history = [
+        {
+            "repository_id": "repo-a",
+            "action_taken": "ACT",
+            "strategy": "retry_logic",
+            "verified": False,
+        }
+    ]
+
+    assert strategies.select_strategy("ACT", history, "repo-a") == "minimal_patch"
