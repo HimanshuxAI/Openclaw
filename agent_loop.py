@@ -3,9 +3,15 @@ import time
 
 import decision_engine
 import patcher
+import policy_engine
 import predictor
 import test_runner
-from correctness import cluster_failure, extract_test_intent, suggest_generalizations
+from correctness import (
+    cluster_failure,
+    extract_test_intent,
+    policy_metrics,
+    suggest_generalizations,
+)
 from failure_graph import FailureGraph
 from memory.patterns import extract_error_type, extract_file, normalize_error_message
 from memory.selector import (
@@ -185,6 +191,10 @@ def _finish(success, metrics, started_at):
         f"unnecessary_actions={metrics['unnecessary_actions']} "
         f"cost_saved={metrics['cost_saved']:.2f} "
         f"decision_validate_runs={metrics['decision_validate_runs']} "
+        f"cumulative_reward={metrics['cumulative_reward']:.2f} "
+        f"policy_improvement_rate={metrics['policy_improvement_rate']:.2f} "
+        f"regret={metrics['regret']:.2f} "
+        f"action_efficiency={metrics['action_efficiency']:.2f} "
         f"propagated_fixes={metrics['propagated_fixes']} "
         f"regression_rejections={metrics['regression_rejections']} "
         f"fix_multiplication={fix_multiplication:.2f} "
@@ -314,7 +324,51 @@ def _prediction_failure_text(prediction):
     return f"PREEMPTIVE_RISK modules={modules}\n{tests}".strip()
 
 
-def _run_preemptive_prediction(repo_path, graph, memory, metrics):
+def _policy_outcome(decision, actual_outcome):
+    actual_cost = 0.0
+    if decision["decision"] in {decision_engine.ACT, decision_engine.VALIDATE}:
+        actual_cost = decision["expected_action_cost"]
+    return {
+        "actual_outcome": actual_outcome,
+        "estimated_cost": decision["expected_action_cost"],
+        "actual_cost": actual_cost,
+        "failure_cost": decision["expected_failure_loss"],
+        "failure_cost_saved": max(
+            0.0,
+            decision["expected_failure_loss"] - decision["expected_action_cost"],
+        ),
+    }
+
+
+def _update_policy(policy, decision, outcome, metrics):
+    update = policy.update(decision, outcome)
+    history_entry = update.get("history_entry") or {
+        "reward": update.get("reward", 0.0),
+        "action_taken": decision.get("decision"),
+        "best_possible_reward": outcome.get("failure_cost_saved", 0.0),
+    }
+    metrics["policy_history"].append(history_entry)
+    computed = policy_metrics(metrics["policy_history"])
+    metrics["cumulative_reward"] = computed["cumulative_reward"]
+    metrics["policy_improvement_rate"] = computed["policy_improvement_rate"]
+    metrics["regret"] = computed["regret"]
+    metrics["action_efficiency"] = computed["action_efficiency"]
+    log(
+        "PHASE8: "
+        f"reward={update['reward']:.2f} "
+        f"epsilon={update['epsilon']:.2f} "
+        f"threshold={update['threshold']:.2f} "
+        f"weights={_format_policy_weights(update['weights'])}"
+    )
+
+
+def _format_policy_weights(weights):
+    return ",".join(
+        f"{name}:{value:.2f}" for name, value in sorted(weights.items())
+    )
+
+
+def _run_preemptive_prediction(repo_path, graph, memory, metrics, policy):
     started = time.monotonic()
     change_set = predictor.detect_change_set(repo_path)
     if not change_set.get("files") and not change_set.get("functions"):
@@ -330,22 +384,35 @@ def _run_preemptive_prediction(repo_path, graph, memory, metrics):
         f"risk={prediction['risk_score']:.2f} "
         f"confidence={prediction['confidence']:.2f}"
     )
-    decision = decision_engine.evaluate(prediction)
+    decision = decision_engine.evaluate(prediction, policy=policy)
     log(
         "PHASE7: "
         f"prediction=risk={prediction['risk_score']:.2f},"
         f"confidence={prediction['confidence']:.2f} "
         f"decision={decision['decision']} "
         f"expected_loss={decision['expected_failure_loss']:.2f} "
-        f"action_cost={decision['expected_action_cost']:.2f}"
+        f"action_cost={decision['expected_action_cost']:.2f} "
+        f"policy_score={decision['policy_score']:.2f} "
+        f"explored={str(decision['explored']).lower()}"
     )
     if decision["decision"] == decision_engine.SKIP:
         metrics["decision_skips"] += 1
+        prediction["_policy_decision"] = decision
         return prediction
     if decision["decision"] == decision_engine.VALIDATE:
         metrics["decision_validate_runs"] += 1
+        subset_result = {"passed": True, "output": "", "errors": ""}
         if prediction["predicted_tests"]:
-            test_runner.run_test_subset(repo_path, prediction["predicted_tests"])
+            subset_result = test_runner.run_test_subset(
+                repo_path,
+                prediction["predicted_tests"],
+            )
+        outcome = (
+            policy_engine.SUCCESS
+            if not subset_result.get("passed", True)
+            else policy_engine.NO_EFFECT
+        )
+        _update_policy(policy, decision, _policy_outcome(decision, outcome), metrics)
         return prediction
 
     metrics["preemptive_attempts"] += 1
@@ -361,9 +428,21 @@ def _run_preemptive_prediction(repo_path, graph, memory, metrics):
     metrics["context_tokens"] += generation_metrics.get("context_tokens", 0)
     ranked = patcher.rank_patch_candidates(repo_path, patches, failure_text, memory=memory)
     if not ranked:
+        _update_policy(
+            policy,
+            decision,
+            _policy_outcome(decision, policy_engine.NO_EFFECT),
+            metrics,
+        )
         return prediction
     candidate = ranked[0]
     if not patcher.apply_patch(repo_path, candidate["patch"]):
+        _update_policy(
+            policy,
+            decision,
+            _policy_outcome(decision, policy_engine.FAILURE),
+            metrics,
+        )
         return prediction
     result = test_runner.run_tests(repo_path)
     if result["passed"]:
@@ -374,14 +453,26 @@ def _run_preemptive_prediction(repo_path, graph, memory, metrics):
             0.0,
             decision["expected_failure_loss"] - decision["expected_action_cost"],
         )
+        _update_policy(
+            policy,
+            decision,
+            _policy_outcome(decision, policy_engine.SUCCESS),
+            metrics,
+        )
         return prediction
     metrics["regression_rejections"] += 1
     metrics["unnecessary_actions"] += 1
     patcher.revert_patch(repo_path, candidate["patch"])
+    _update_policy(
+        policy,
+        decision,
+        _policy_outcome(decision, policy_engine.FAILURE),
+        metrics,
+    )
     return prediction
 
 
-def _record_prediction_outcome(prediction, result, metrics):
+def _record_prediction_outcome(prediction, result, metrics, policy=None):
     if not prediction:
         return
     calibration = predictor.update_prediction_accuracy(
@@ -391,6 +482,18 @@ def _record_prediction_outcome(prediction, result, metrics):
     metrics["prediction_correct"] += calibration["correct_predictions"]
     metrics["prediction_false_positive"] += calibration["false_positives"]
     metrics["prediction_false_negative"] += calibration["false_negatives"]
+    if policy and prediction.get("_policy_decision"):
+        actual_outcome = (
+            policy_engine.FAILURE
+            if calibration["false_negatives"] or calibration["correct_predictions"]
+            else policy_engine.NO_EFFECT
+        )
+        _update_policy(
+            policy,
+            prediction["_policy_decision"],
+            _policy_outcome(prediction["_policy_decision"], actual_outcome),
+            metrics,
+        )
 
 
 def _pytest_stop_reason(result):
@@ -422,12 +525,18 @@ def run_agent(repo_path):
         "propagated_fixes": 0,
         "suggested_generalizations": 0,
         "regression_rejections": 0,
+        "policy_history": [],
+        "cumulative_reward": 0.0,
+        "policy_improvement_rate": 0.0,
+        "regret": 0.0,
+        "action_efficiency": 0.0,
     }
     graph = FailureGraph.build(repo_path)
     memory = load_memory()
-    prediction = _run_preemptive_prediction(repo_path, graph, memory, metrics)
+    policy = policy_engine.PolicyEngine()
+    prediction = _run_preemptive_prediction(repo_path, graph, memory, metrics, policy)
     result = test_runner.run_tests(repo_path)
-    _record_prediction_outcome(prediction, result, metrics)
+    _record_prediction_outcome(prediction, result, metrics, policy=policy)
     if result["passed"]:
         log("SUCCESS: tests already pass")
         return _finish(True, metrics, started_at)
