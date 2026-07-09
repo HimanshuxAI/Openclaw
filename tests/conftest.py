@@ -15,6 +15,10 @@ def memory_path(tmp_path, monkeypatch):
         "OPENCLAW_POLICY_STATE_PATH",
         str(tmp_path / "policy_state.json"),
     )
+    monkeypatch.setenv(
+        "OPENCLAW_PHASE9_MEMORY_DIR",
+        str(tmp_path / "phase9"),
+    )
     return path
 
 
