@@ -306,3 +306,33 @@ def decision_metrics(records):
             6,
         ),
     }
+
+
+def policy_metrics(records):
+    cumulative_reward = sum(
+        float(record.get("reward", 0.0) or 0.0) for record in records
+    )
+    total_best = sum(
+        float(record.get("best_possible_reward", 0.0) or 0.0) for record in records
+    )
+    total_reward_delta = 0.0
+    if len(records) >= 2:
+        total_reward_delta = float(records[-1].get("reward", 0.0) or 0.0) - float(
+            records[0].get("reward", 0.0) or 0.0
+        )
+    action_count = sum(
+        1 for record in records if record.get("action_taken") in {"ACT", "VALIDATE"}
+    )
+    regret = max(0.0, total_best - cumulative_reward)
+    return {
+        "cumulative_reward": round(cumulative_reward, 6),
+        "policy_improvement_rate": round(
+            total_reward_delta / (len(records) - 1) if len(records) > 1 else 0.0,
+            6,
+        ),
+        "regret": round(regret, 6),
+        "action_efficiency": round(
+            cumulative_reward / action_count if action_count else 0.0,
+            6,
+        ),
+    }
