@@ -450,6 +450,7 @@ def _record_phase9_outcome(outcome, run_id, repository_id, metrics):
     verification = outcome["verification"]
     actual_decision = outcome["actual_decision"]
     pre_evidence = outcome["pre_evidence"]
+    post_evidence = outcome.get("post_evidence", {})
     state = _safe_token(verification.get("state"), "not_executed")
     reason = _safe_token(
         outcome["authorization"].get("reason") or pre_evidence.get("reason"),
@@ -535,6 +536,9 @@ def _record_phase9_outcome(outcome, run_id, repository_id, metrics):
     metrics["tool_contract_failures"] += len(
         pre_evidence.get("contract_failures", [])
     )
+    metrics["tool_contract_failures"] += len(
+        post_evidence.get("contract_failures", [])
+    )
     if not outcome["authorization"].get("authorized"):
         metrics["goal_guard_rejections"] += 1
     if actual_decision["decision"] != outcome.get("proposed_action", actual_decision["decision"]):
@@ -549,7 +553,8 @@ def _record_phase9_outcome(outcome, run_id, repository_id, metrics):
         "PHASE10: "
         f"evidence={float(pre_evidence.get('score', 0.0) or 0.0):.2f} "
         f"uncertainty={pre_evidence.get('uncertainty', 'high')} "
-        f"goal={outcome['authorization'].get('reason') or 'authorized'}"
+        f"goal={metrics.get('goal', {}).get('state', 'unknown')} "
+        f"reason={outcome['authorization'].get('reason') or 'authorized'}"
     )
 
 

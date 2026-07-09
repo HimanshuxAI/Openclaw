@@ -186,3 +186,42 @@ def test_guard_rejection_never_directly_applies_a_patch_and_updates_policy_once(
 
     assert len(updates) == 1
     assert updates[0][0]["decision"] == "SKIP"
+
+
+def test_malformed_post_verification_evidence_is_counted_in_phase10_metrics(
+    monkeypatch, tmp_path, capsys
+):
+    updates = []
+    _install_prediction(monkeypatch)
+    monkeypatch.setattr(agent_loop.policy_engine, "PolicyEngine", lambda: _policy(updates))
+
+    def malformed_outcome(*args, **kwargs):
+        outcome = _outcome(args[2], state="failed")
+        outcome["post_evidence"] = {
+            "sufficient": False,
+            "contract_failures": ["invalid_test_result"],
+        }
+        return outcome
+
+    monkeypatch.setattr(agent_loop.coordinator, "run_candidate", malformed_outcome)
+    monkeypatch.setattr(
+        agent_loop.patcher,
+        "generate_patch_candidates",
+        lambda *args, **kwargs: ["patch-a"],
+    )
+    monkeypatch.setattr(
+        agent_loop.patcher,
+        "rank_patch_candidates",
+        lambda *args, **kwargs: [{"patch": "patch-a", "score": {"confidence": 0.9}}],
+    )
+    monkeypatch.setattr(
+        agent_loop.test_runner,
+        "run_tests",
+        lambda path: {"passed": True, "output": "", "errors": "", "exit_code": 0},
+    )
+
+    assert agent_loop.run_agent(tmp_path) is True
+
+    output = capsys.readouterr().out
+    assert "tool_contract_failures=1" in output
+    assert "goal=active" in output
