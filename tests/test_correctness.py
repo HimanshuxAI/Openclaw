@@ -11,6 +11,7 @@ from correctness import (
     regression_risk,
     simulate_patch,
     suggest_generalizations,
+    phase9_metrics,
 )
 
 
@@ -115,6 +116,49 @@ def test_policy_metrics_track_reward_improvement_regret_and_efficiency():
     assert metrics["policy_improvement_rate"] == 0.5
     assert metrics["regret"] == 1.0
     assert metrics["action_efficiency"] == 1.25
+
+
+def test_phase9_metrics_use_safe_zero_denominators_and_verified_outcomes():
+    assert phase9_metrics([]) == {
+        "plan_success_rate": 0.0,
+        "critic_catch_rate": 0.0,
+        "regression_avoidance_rate": 0.0,
+        "strategy_roi": 0.0,
+        "multi_step_efficiency": 0.0,
+    }
+
+    metrics = phase9_metrics(
+        [
+            {
+                "verification_state": "passed",
+                "reviewed": True,
+                "critic_caught": False,
+                "applied": True,
+                "planned_steps": 4,
+                "completed_steps": 4,
+                "failure_cost_saved": 2.0,
+                "action_cost": 0.5,
+            },
+            {
+                "verification_state": "regressed",
+                "reviewed": True,
+                "critic_caught": True,
+                "applied": True,
+                "planned_steps": 4,
+                "completed_steps": 2,
+                "failure_cost_saved": 0.0,
+                "action_cost": 0.0,
+            },
+        ]
+    )
+
+    assert metrics == {
+        "plan_success_rate": 0.5,
+        "critic_catch_rate": 0.5,
+        "regression_avoidance_rate": 0.5,
+        "strategy_roi": 1.5,
+        "multi_step_efficiency": 0.75,
+    }
 
 
 def test_suggest_generalizations_finds_same_line_replacement_elsewhere(git_repo):

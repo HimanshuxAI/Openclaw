@@ -336,3 +336,41 @@ def policy_metrics(records):
             6,
         ),
     }
+
+
+def phase9_metrics(records):
+    """Summarize terminal plan outcomes without dividing by absent evidence."""
+    values = [record for record in records if isinstance(record, dict)]
+    terminal = len(values)
+    passed = sum(record.get("verification_state") == "passed" for record in values)
+    reviewed = sum(record.get("reviewed") is True for record in values)
+    caught = sum(record.get("critic_caught") is True for record in values)
+    applied = sum(record.get("applied") is True for record in values)
+    reverted = sum(record.get("verification_state") == "regressed" for record in values)
+    planned_steps = sum(_metric_number(record, "planned_steps") for record in values)
+    completed_steps = sum(_metric_number(record, "completed_steps") for record in values)
+    strategy_roi = sum(
+        _metric_number(record, "failure_cost_saved")
+        - _metric_number(record, "action_cost")
+        for record in values
+        if record.get("verification_state") == "passed"
+    )
+    return {
+        "plan_success_rate": _metric_ratio(passed, terminal),
+        "critic_catch_rate": _metric_ratio(caught, reviewed),
+        "regression_avoidance_rate": _metric_ratio(reverted, applied),
+        "strategy_roi": round(strategy_roi, 6),
+        "multi_step_efficiency": _metric_ratio(completed_steps, planned_steps),
+    }
+
+
+def _metric_number(record, key):
+    try:
+        value = record.get(key, 0)
+        return float(value) if isinstance(value, (int, float)) else 0.0
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _metric_ratio(numerator, denominator):
+    return round(numerator / denominator if denominator else 0.0, 6)
