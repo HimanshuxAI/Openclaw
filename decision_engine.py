@@ -1,3 +1,6 @@
+import policy_engine
+
+
 ACT = "ACT"
 VALIDATE = "VALIDATE"
 SKIP = "SKIP"
@@ -24,7 +27,7 @@ def should_act(prediction):
     return expected_failure_loss > expected_action_cost
 
 
-def evaluate(prediction):
+def evaluate(prediction, policy=None):
     expected_failure_loss = round(
         _value(prediction, "risk_score", 0.0)
         * _value(prediction, "confidence", 0.0)
@@ -37,23 +40,18 @@ def evaluate(prediction):
     )
     risk = _value(prediction, "risk_score", 0.0)
     confidence = _value(prediction, "confidence", 0.0)
-    if (
-        expected_failure_loss > expected_action_cost
-        and risk >= ACT_RISK_THRESHOLD
-        and confidence >= ACT_CONFIDENCE_THRESHOLD
-    ):
-        decision = ACT
-    elif (
-        expected_failure_loss > expected_action_cost
-        or (
-            risk >= VALIDATE_RISK_THRESHOLD
-            and confidence >= VALIDATE_CONFIDENCE_THRESHOLD
-        )
-    ):
-        decision = VALIDATE
-    else:
-        decision = SKIP
+    features = {
+        "risk_score": risk,
+        "confidence": confidence,
+        "failure_frequency": _value(prediction, "failure_frequency", 0.0),
+        "change_frequency": _value(prediction, "change_frequency", 0.0),
+        "centrality": _value(prediction, "dependency_centrality", 0.0),
+    }
+    policy = policy or policy_engine.PolicyEngine()
+    policy_decision = policy.predict(features)
+    decision = policy_decision["decision"]
     return {
+        **policy_decision,
         "decision": decision,
         "expected_failure_loss": expected_failure_loss,
         "expected_action_cost": expected_action_cost,
