@@ -3,6 +3,7 @@ import subprocess
 from correctness import (
     cluster_failure,
     decision_metrics,
+    policy_metrics,
     prediction_accuracy,
     extract_test_intent,
     impact_score,
@@ -99,6 +100,21 @@ def test_decision_metrics_summarize_cost_and_action_quality():
     assert metrics["prevented_failures"] == 1
     assert metrics["unnecessary_actions"] == 1
     assert metrics["cost_saved"] == 1.0
+
+
+def test_policy_metrics_track_reward_improvement_regret_and_efficiency():
+    metrics = policy_metrics(
+        [
+            {"reward": 1.0, "best_possible_reward": 1.5, "action_taken": "ACT"},
+            {"reward": -0.5, "best_possible_reward": 0.0, "action_taken": "SKIP"},
+            {"reward": 2.0, "best_possible_reward": 2.0, "action_taken": "VALIDATE"},
+        ]
+    )
+
+    assert metrics["cumulative_reward"] == 2.5
+    assert metrics["policy_improvement_rate"] == 0.5
+    assert metrics["regret"] == 1.0
+    assert metrics["action_efficiency"] == 1.25
 
 
 def test_suggest_generalizations_finds_same_line_replacement_elsewhere(git_repo):

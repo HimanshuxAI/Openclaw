@@ -7,6 +7,14 @@ import pytest
 def memory_path(tmp_path, monkeypatch):
     path = tmp_path / "openclaw-memory.json"
     monkeypatch.setenv("OPENCLAW_MEMORY_PATH", str(path))
+    monkeypatch.setenv(
+        "OPENCLAW_POLICY_HISTORY_PATH",
+        str(tmp_path / "policy_history.jsonl"),
+    )
+    monkeypatch.setenv(
+        "OPENCLAW_POLICY_STATE_PATH",
+        str(tmp_path / "policy_state.json"),
+    )
     return path
 
 
