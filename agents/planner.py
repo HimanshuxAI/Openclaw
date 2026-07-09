@@ -29,6 +29,7 @@ def create_plan(
     executable = action == "ACT" and bool(_patch(candidate))
     return {
         "plan_id": _plan_id(action, strategy, candidate),
+        "repository_id": repository_id,
         "action": action,
         "strategy": strategy,
         "candidate": candidate,

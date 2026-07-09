@@ -19,6 +19,7 @@ def test_create_plan_is_minimal_reversible_and_uses_the_top_candidate():
     assert plan["candidate"] == candidates[0]
     assert plan["candidate_count"] == 2
     assert plan["strategy"] == "minimal_patch"
+    assert plan["repository_id"] == "repo-a"
     assert plan["steps"] == [
         "analyze_context",
         "select_strategy",
