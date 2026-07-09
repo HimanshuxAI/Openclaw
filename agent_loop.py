@@ -1,6 +1,9 @@
+import hashlib
 import re
 import time
+import uuid
 
+from agents import coordinator
 import decision_engine
 import patcher
 import policy_engine
@@ -9,7 +12,9 @@ import test_runner
 from correctness import (
     cluster_failure,
     extract_test_intent,
+    phase9_metrics,
     policy_metrics,
+    simulate_patch,
     suggest_generalizations,
 )
 from failure_graph import FailureGraph
@@ -20,8 +25,10 @@ from memory.selector import (
     find_similar_cases,
     similarity_score,
 )
+from memory import phase9
 from memory.store import add_record, load_memory
 from rag.router import extract_pytest_node
+from reliability import goals
 from utils import extract_failure, log
 
 
@@ -144,6 +151,7 @@ def _template_patches(failure, memory):
 
 
 def _finish(success, metrics, started_at):
+    _finish_goal(metrics, success)
     elapsed_ms = max(0, round((time.monotonic() - started_at) * 1000))
     fix_multiplication = metrics["propagated_fixes"] / max(1, metrics["attempts"])
     prediction_total = metrics["prediction_correct"] + metrics["prediction_false_positive"]
@@ -174,6 +182,7 @@ def _finish(success, metrics, started_at):
         if decision_total
         else 1.0
     )
+    phase9_summary = phase9_metrics(metrics["phase9_records"])
     log(
         "METRICS: "
         f"attempts={metrics['attempts']} "
@@ -197,11 +206,33 @@ def _finish(success, metrics, started_at):
         f"action_efficiency={metrics['action_efficiency']:.2f} "
         f"propagated_fixes={metrics['propagated_fixes']} "
         f"regression_rejections={metrics['regression_rejections']} "
+        f"plan_success_rate={phase9_summary['plan_success_rate']:.2f} "
+        f"critic_catch_rate={phase9_summary['critic_catch_rate']:.2f} "
+        f"regression_avoidance_rate={phase9_summary['regression_avoidance_rate']:.2f} "
+        f"strategy_roi={phase9_summary['strategy_roi']:.2f} "
+        f"multi_step_efficiency={phase9_summary['multi_step_efficiency']:.2f} "
+        f"evidence_gate_rejections={metrics['evidence_gate_rejections']} "
+        f"tool_contract_failures={metrics['tool_contract_failures']} "
+        f"goal_guard_rejections={metrics['goal_guard_rejections']} "
+        f"uncertainty_downgrades={metrics['uncertainty_downgrades']} "
         f"fix_multiplication={fix_multiplication:.2f} "
         f"elapsed_ms={elapsed_ms} "
         f"passed={str(success).lower()}"
     )
     return success
+
+
+def _finish_goal(metrics, success):
+    goal = metrics.get("goal")
+    if not goal or goal.get("state") != "active":
+        return
+    try:
+        metrics["goal"] = goals.finish_goal(
+            goal,
+            "passed" if success else "failed",
+        )
+    except (OSError, ValueError):
+        log("Phase 10 goal write skipped")
 
 
 def _generated_patch(failure, repo_path, memory, run_metrics):
@@ -368,7 +399,179 @@ def _format_policy_weights(weights):
     )
 
 
-def _run_preemptive_prediction(repo_path, graph, memory, metrics, policy):
+def _run_id():
+    return f"run-{uuid.uuid4().hex[:16]}"
+
+
+def _repository_id(repo_path):
+    digest = hashlib.sha256(str(repo_path).encode("utf-8")).hexdigest()[:16]
+    return f"repo-{digest}"
+
+
+def _empty_simulation():
+    return {
+        "touched_files": [],
+        "impact_score": 0.0,
+        "regression_risk": 1.0,
+        "pass_likelihood": 0.0,
+    }
+
+
+def _candidate_simulation(repo_path, candidate):
+    patch = candidate.get("patch", "") if isinstance(candidate, dict) else ""
+    if not patch:
+        return _empty_simulation()
+    try:
+        simulation = simulate_patch(repo_path, patch)
+    except (OSError, ValueError):
+        return _empty_simulation()
+    return simulation if isinstance(simulation, dict) else _empty_simulation()
+
+
+def _safe_token(value, fallback):
+    value = str(value or "")
+    return value if re.fullmatch(r"[a-z][a-z0-9_]{0,63}", value) else fallback
+
+
+def _policy_outcome_from_phase9(decision, outcome):
+    state = outcome["verification"].get("state")
+    if state == "passed":
+        actual_outcome = policy_engine.SUCCESS
+    elif state in {"failed", "regressed"}:
+        actual_outcome = policy_engine.FAILURE
+    else:
+        actual_outcome = policy_engine.NO_EFFECT
+    return _policy_outcome(decision, actual_outcome)
+
+
+def _record_phase9_outcome(outcome, run_id, repository_id, metrics):
+    plan = outcome["plan"]
+    simulation = plan.get("simulation", {})
+    verification = outcome["verification"]
+    actual_decision = outcome["actual_decision"]
+    pre_evidence = outcome["pre_evidence"]
+    state = _safe_token(verification.get("state"), "not_executed")
+    reason = _safe_token(
+        outcome["authorization"].get("reason") or pre_evidence.get("reason"),
+        "verified" if state == "passed" else "unknown",
+    )
+    critic_risks = [
+        _safe_token(risk, "unknown") for risk in outcome["critique"].get("risks", [])
+    ]
+    records = {
+        "plans": {
+            "run_id": run_id,
+            "repository_id": repository_id,
+            "plan_id": plan["plan_id"],
+            "action": actual_decision["decision"],
+            "strategy": plan["strategy"],
+            "candidate_count": int(plan.get("candidate_count", 0) or 0),
+            "reversible": bool(plan.get("reversible")),
+            "executable": bool(plan.get("executable")),
+            "steps": list(plan.get("steps", [])),
+            "impact_score": float(simulation.get("impact_score", 0.0) or 0.0),
+            "regression_risk": float(simulation.get("regression_risk", 1.0) or 1.0),
+            "pass_likelihood": float(simulation.get("pass_likelihood", 0.0) or 0.0),
+            "critic_risks": critic_risks,
+        },
+        "decisions": {
+            "run_id": run_id,
+            "repository_id": repository_id,
+            "plan_id": plan["plan_id"],
+            "proposed_action": outcome.get("proposed_action", actual_decision["decision"]),
+            "action_taken": actual_decision["decision"],
+            "verification_state": state,
+            "evidence_score": float(pre_evidence.get("score", 0.0) or 0.0),
+            "uncertainty": _safe_token(pre_evidence.get("uncertainty"), "high"),
+            "reason": reason,
+        },
+        "strategies": {
+            "run_id": run_id,
+            "repository_id": repository_id,
+            "plan_id": plan["plan_id"],
+            "strategy": plan["strategy"],
+            "action_taken": actual_decision["decision"],
+            "verified": state == "passed",
+            "failure_cost_saved": max(
+                0.0,
+                float(actual_decision.get("expected_failure_loss", 0.0) or 0.0)
+                - float(actual_decision.get("expected_action_cost", 0.0) or 0.0),
+            ),
+            "action_cost": float(actual_decision.get("expected_action_cost", 0.0) or 0.0),
+        },
+    }
+    if state != "passed":
+        records["failures"] = {
+            "run_id": run_id,
+            "repository_id": repository_id,
+            "plan_id": plan["plan_id"],
+            "verification_state": state,
+            "reason": reason,
+            "tool_contract_failures": [
+                _safe_token(value, "unknown")
+                for value in pre_evidence.get("contract_failures", [])
+            ],
+        }
+    try:
+        for name, record in records.items():
+            phase9.append_record(name, record)
+    except (OSError, ValueError):
+        log("Phase 9 memory write skipped")
+
+    metrics["phase9_records"].append(
+        {
+            "verification_state": state,
+            "reviewed": True,
+            "critic_caught": bool(critic_risks),
+            "applied": outcome["execution"].get("applied") is True,
+            "planned_steps": len(plan.get("steps", [])),
+            "completed_steps": len(plan.get("steps", [])) if state == "passed" else 0,
+            "failure_cost_saved": records["strategies"]["failure_cost_saved"],
+            "action_cost": records["strategies"]["action_cost"],
+        }
+    )
+    if not pre_evidence.get("sufficient"):
+        metrics["evidence_gate_rejections"] += 1
+    metrics["tool_contract_failures"] += len(
+        pre_evidence.get("contract_failures", [])
+    )
+    if not outcome["authorization"].get("authorized"):
+        metrics["goal_guard_rejections"] += 1
+    if actual_decision["decision"] != outcome.get("proposed_action", actual_decision["decision"]):
+        metrics["uncertainty_downgrades"] += 1
+    _record_goal_steps(metrics, outcome)
+    log(
+        "PHASE9: "
+        f"plan={plan['plan_id']} strategy={plan['strategy']} "
+        f"critic={'caught' if critic_risks else 'clear'} state={state}"
+    )
+    log(
+        "PHASE10: "
+        f"evidence={float(pre_evidence.get('score', 0.0) or 0.0):.2f} "
+        f"uncertainty={pre_evidence.get('uncertainty', 'high')} "
+        f"goal={outcome['authorization'].get('reason') or 'authorized'}"
+    )
+
+
+def _record_goal_steps(metrics, outcome):
+    goal = metrics.get("goal")
+    if not goal or goal.get("state") != "active":
+        return
+    steps = ["planner", "critic"]
+    if outcome["execution"].get("applied"):
+        steps.append("executor")
+    steps.append("verifier")
+    try:
+        for step in steps:
+            goal = goals.record_goal_step(goal, step)
+        metrics["goal"] = goal
+    except (OSError, ValueError):
+        log("Phase 10 goal write skipped")
+
+
+def _run_preemptive_prediction(
+    repo_path, graph, memory, metrics, policy, run_id, repository_id, goal
+):
     started = time.monotonic()
     change_set = predictor.detect_change_set(repo_path)
     if not change_set.get("files") and not change_set.get("functions"):
@@ -427,25 +630,26 @@ def _run_preemptive_prediction(repo_path, graph, memory, metrics, policy):
     metrics["model_calls"] += generation_metrics.get("model_calls", 0)
     metrics["context_tokens"] += generation_metrics.get("context_tokens", 0)
     ranked = patcher.rank_patch_candidates(repo_path, patches, failure_text, memory=memory)
-    if not ranked:
-        _update_policy(
-            policy,
-            decision,
-            _policy_outcome(decision, policy_engine.NO_EFFECT),
-            metrics,
-        )
-        return prediction
-    candidate = ranked[0]
-    if not patcher.apply_patch(repo_path, candidate["patch"]):
-        _update_policy(
-            policy,
-            decision,
-            _policy_outcome(decision, policy_engine.FAILURE),
-            metrics,
-        )
-        return prediction
-    result = test_runner.run_tests(repo_path)
-    if result["passed"]:
+    candidate = ranked[0] if ranked else None
+    outcome = coordinator.run_candidate(
+        repo_path,
+        prediction,
+        decision,
+        [candidate] if candidate else [],
+        _candidate_simulation(repo_path, candidate),
+        phase9.load_records("strategies"),
+        goal,
+        1,
+        patcher.apply_patch,
+        lambda: {"passed": True, "output": "", "errors": "", "exit_code": 0},
+        lambda: test_runner.run_tests(repo_path),
+        patcher.revert_patch,
+    )
+    outcome["proposed_action"] = decision["decision"]
+    _record_phase9_outcome(outcome, run_id, repository_id, metrics)
+    prediction["_phase9_outcome"] = outcome
+    prediction["_policy_decision"] = outcome["actual_decision"]
+    if outcome["verification"]["state"] == "passed":
         metrics["preemptive_successes"] += 1
         metrics["prevented_failures"] += 1
         metrics["decision_correct"] += 1
@@ -453,22 +657,9 @@ def _run_preemptive_prediction(repo_path, graph, memory, metrics, policy):
             0.0,
             decision["expected_failure_loss"] - decision["expected_action_cost"],
         )
-        _update_policy(
-            policy,
-            decision,
-            _policy_outcome(decision, policy_engine.SUCCESS),
-            metrics,
-        )
-        return prediction
-    metrics["regression_rejections"] += 1
-    metrics["unnecessary_actions"] += 1
-    patcher.revert_patch(repo_path, candidate["patch"])
-    _update_policy(
-        policy,
-        decision,
-        _policy_outcome(decision, policy_engine.FAILURE),
-        metrics,
-    )
+    elif outcome["verification"]["state"] in {"failed", "regressed"}:
+        metrics["regression_rejections"] += 1
+        metrics["unnecessary_actions"] += 1
     return prediction
 
 
@@ -482,7 +673,15 @@ def _record_prediction_outcome(prediction, result, metrics, policy=None):
     metrics["prediction_correct"] += calibration["correct_predictions"]
     metrics["prediction_false_positive"] += calibration["false_positives"]
     metrics["prediction_false_negative"] += calibration["false_negatives"]
-    if policy and prediction.get("_policy_decision"):
+    if policy and prediction.get("_phase9_outcome"):
+        decision = prediction["_policy_decision"]
+        _update_policy(
+            policy,
+            decision,
+            _policy_outcome_from_phase9(decision, prediction["_phase9_outcome"]),
+            metrics,
+        )
+    elif policy and prediction.get("_policy_decision"):
         actual_outcome = (
             policy_engine.FAILURE
             if calibration["false_negatives"] or calibration["correct_predictions"]
@@ -530,11 +729,38 @@ def run_agent(repo_path):
         "policy_improvement_rate": 0.0,
         "regret": 0.0,
         "action_efficiency": 0.0,
+        "phase9_records": [],
+        "evidence_gate_rejections": 0,
+        "tool_contract_failures": 0,
+        "goal_guard_rejections": 0,
+        "uncertainty_downgrades": 0,
+        "goal": None,
     }
     graph = FailureGraph.build(repo_path)
     memory = load_memory()
     policy = policy_engine.PolicyEngine()
-    prediction = _run_preemptive_prediction(repo_path, graph, memory, metrics, policy)
+    run_id = _run_id()
+    repository_id = _repository_id(repo_path)
+    try:
+        metrics["goal"] = goals.start_goal(run_id, repository_id, MAX_STEPS)
+    except (OSError, ValueError):
+        log("Phase 10 goal write skipped")
+        metrics["goal"] = {
+            "run_id": run_id,
+            "repository_id": repository_id,
+            "state": "active",
+            "max_steps": MAX_STEPS,
+        }
+    prediction = _run_preemptive_prediction(
+        repo_path,
+        graph,
+        memory,
+        metrics,
+        policy,
+        run_id,
+        repository_id,
+        metrics["goal"],
+    )
     result = test_runner.run_tests(repo_path)
     _record_prediction_outcome(prediction, result, metrics, policy=policy)
     if result["passed"]:

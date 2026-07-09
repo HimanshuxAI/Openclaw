@@ -62,16 +62,32 @@ def run_candidate(
 
     execution = executor.execute(plan, repo_path, apply_patch)
     verification = verifier.verify(execution, run_subset, run_full, revert, simulation)
+    post_evidence = evidence.assess_verification(verification)
+    if verification["state"] == "passed" and not post_evidence["sufficient"]:
+        verification = _reject_unverified_pass(verification, execution, revert)
     return {
         "plan": plan,
         "critique": critique,
         "actual_decision": actual_decision,
         "pre_evidence": pre_evidence,
-        "post_evidence": evidence.assess_verification(verification),
+        "post_evidence": post_evidence,
         "authorization": authorization,
         "execution": execution,
         "verification": verification,
         "critic_rounds": critic_rounds,
+    }
+
+
+def _reject_unverified_pass(verification, execution, revert):
+    try:
+        reverted = bool(revert(execution.get("patch", "")))
+    except (OSError, RuntimeError, ValueError):
+        reverted = False
+    return {
+        **verification,
+        "state": "failed",
+        "tests_passed": False,
+        "reverted": reverted,
     }
 
 

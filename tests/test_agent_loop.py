@@ -80,6 +80,16 @@ def test_run_agent_runs_preemptive_prediction_before_tests(monkeypatch, tmp_path
             {"patch": patches[0], "score": {"confidence": 0.92}}
         ],
     )
+    monkeypatch.setattr(
+        agent_loop,
+        "simulate_patch",
+        lambda path, patch: {
+            "touched_files": ["service.py"],
+            "impact_score": 1.0,
+            "regression_risk": 0.1,
+            "pass_likelihood": 0.9,
+        },
+    )
     monkeypatch.setattr(agent_loop.patcher, "apply_patch", lambda path, patch: True)
     monkeypatch.setattr(
         agent_loop.test_runner,
@@ -205,6 +215,16 @@ def test_run_agent_updates_policy_after_preemptive_success(monkeypatch, tmp_path
         lambda path, patches, failure, memory=None: [
             {"patch": patches[0], "score": {"confidence": 0.92}}
         ],
+    )
+    monkeypatch.setattr(
+        agent_loop,
+        "simulate_patch",
+        lambda path, patch: {
+            "touched_files": ["service.py"],
+            "impact_score": 1.0,
+            "regression_risk": 0.1,
+            "pass_likelihood": 0.9,
+        },
     )
     monkeypatch.setattr(agent_loop.patcher, "apply_patch", lambda path, patch: True)
     monkeypatch.setattr(

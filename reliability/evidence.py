@@ -108,11 +108,13 @@ def valid_test_result(result):
     """Return whether a test-run result is structurally trustworthy."""
     if not isinstance(result, dict):
         return False
+    if not {"passed", "output", "errors"}.issubset(result):
+        return False
     if not isinstance(result.get("passed"), bool):
         return False
-    if not isinstance(result.get("output", ""), str):
+    if not isinstance(result["output"], str):
         return False
-    if not isinstance(result.get("errors", ""), str):
+    if not isinstance(result["errors"], str):
         return False
     exit_code = result.get("exit_code")
     return exit_code is None or (

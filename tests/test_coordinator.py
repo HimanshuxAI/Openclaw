@@ -75,3 +75,26 @@ def test_coordinator_stops_before_executor_when_critic_or_evidence_rejects_plan(
     assert outcome["authorization"]["authorized"] is False
     assert calls == []
     assert outcome["critic_rounds"] == 2
+
+
+def test_coordinator_reverts_when_phase10_rejects_malformed_full_test_evidence():
+    calls = []
+    outcome = coordinator.run_candidate(
+        repo_path="/repo",
+        prediction=_prediction(),
+        decision=_decision(),
+        candidates=_candidate(),
+        simulation=_simulation(),
+        history=[],
+        goal=_goal(),
+        attempt=1,
+        apply_patch=lambda path, patch: calls.append(("apply", path, patch)) or True,
+        run_subset=lambda: calls.append("subset") or _result(),
+        run_full=lambda: calls.append("full") or {"passed": True},
+        revert=lambda patch: calls.append(("revert", patch)) or True,
+    )
+
+    assert outcome["post_evidence"]["sufficient"] is False
+    assert outcome["verification"]["state"] == "failed"
+    assert outcome["verification"]["reverted"] is True
+    assert calls == [("apply", "/repo", "patch-a"), "subset", "full", ("revert", "patch-a")]
