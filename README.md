@@ -22,6 +22,12 @@ small, bounded repair loop and leaves every applied change visible in Git.
 - Simulates patch impact before applying a candidate and penalizes risky edits.
 - Predicts risky changed files before the first pytest run and can try a
   conservative preemptive patch when risk is high.
+- Routes a predicted repair through a planner, critic, evidence gate, goal
+  guard, executor, and verifier before policy learning records its outcome.
+- Stores source-free, repository-scoped Phase 9 decision, plan, failure, and
+  strategy evidence separately from legacy patch memory.
+- Fails closed on malformed simulation or test-tool output and rolls back a
+  patch that lacks structurally valid verification evidence.
 - Preflights one-file, one-hunk Python patches before they touch the repository.
 - Runs a small regression guard on previously passing tests before the full rerun.
 - Rolls back weak candidates and falls through to the next ranked patch.
@@ -115,7 +121,13 @@ inspectable, and bounded.
 ```text
 detect local code changes
     ↓
-predict risky tests/modules and optional preemptive patch
+predict risky tests/modules
+    ↓
+learned ACT / VALIDATE / SKIP decision
+    ↓
+plan → critic (at most two rounds) → evidence + goal guard
+    ↓
+apply an approved preemptive candidate → verify subset and full pytest result
     ↓
 run pytest
     ↓
@@ -180,6 +192,23 @@ candidate before the first normal pytest run, but that patch is still simulated,
 applied through the normal safety checks, and validated with pytest. Prediction
 metrics track prevention rate, prediction accuracy, false-positive rate,
 false-negative rate, and added prediction latency.
+
+Phase 7 routes predictions through expected-value fields, while Phase 8 learns
+the ACT, VALIDATE, and SKIP policy from measured outcomes. Phase 9 adds explicit
+in-process roles for predicted repair actions: the planner makes a minimal,
+reversible plan; the critic can stop or downgrade it; the executor only calls
+the existing preflighted patch application; and the verifier owns test evidence
+and rollback. Policy feedback uses the action actually taken after those checks,
+not merely the original proposal.
+
+Phase 10 hardens that flow with an evidence gate and a persistent, bounded goal
+record. Simulation and test results must have the expected structure before a
+repair can be reported as verified. The goal records the repository identity,
+five-attempt budget, role steps, and terminal state under a configurable local
+runtime directory. These features mitigate unsupported action claims, context
+drift, tool fragility, and locally learned cost-quality trade-offs; they do not
+make OpenClaw factually omniscient, generally autonomous, or capable of
+human-like understanding.
 
 ## Quick Start
 
@@ -285,6 +314,20 @@ produce a confidence score. Replay requires at least `0.88`. A patch that later
 fails for a comparable case is not repeated. Repeated successful patches can
 also be promoted into small fix templates and reused before generation.
 
+### Phase 9–10 runtime evidence
+
+Phase 9 records are source-free operational facts, not repository code or chat
+memory. They are stored under:
+
+```text
+~/.openclaw/phase9/
+```
+
+Set `OPENCLAW_PHASE9_MEMORY_DIR` to isolate or relocate them. The directory
+contains locked, schema-validated JSONL records for `decisions`, `plans`,
+`failures`, and `strategies`, plus one bounded goal file per run. Unknown fields
+and source-shaped data are rejected rather than silently retained.
+
 ## Project Structure
 
 ```text
@@ -303,6 +346,10 @@ rag/context_builder.py  Enforce the 1,800-token whole-scope budget
 memory/store.py         Persist the latest 100 fix outcomes
 memory/patterns.py      Normalize failure details
 memory/selector.py      Rank and select prior cases
+memory/phase9.py        Persist source-free Phase 9 role evidence
+agents/                 Planner, critic, executor, verifier, coordinator roles
+strategies/             Label-only repair strategy selection
+reliability/            Evidence, goal, and authorization guardrails
 web/                     Static HTML, CSS, and browser JavaScript
 tests/                  Unit and end-to-end coverage
 ```
@@ -327,6 +374,10 @@ tests/                  Unit and end-to-end coverage
   sandbox.
 - Memory covers structured failure/patch outcomes only. It is not project or
   conversation memory.
+- Phase 9–10 evidence is local and structural: it can verify this repair flow's
+  test and tool contracts, not arbitrary external facts, citations, or claims.
+- Goal persistence preserves a bounded repair objective for one run; it does
+  not self-initiate work, broaden authority, or provide general alignment.
 - OpenClaw is not fully autonomous or production-ready.
 
 ## Roadmap
