@@ -151,6 +151,83 @@ def test_run_agent_routes_phase_seven_decisions(monkeypatch, tmp_path, capsys):
     assert "decision_validate_runs=1" in output
 
 
+def test_run_agent_updates_policy_after_preemptive_success(monkeypatch, tmp_path, capsys):
+    updates = []
+
+    class StubPolicy:
+        def predict(self, features):
+            return {
+                "decision": agent_loop.decision_engine.ACT,
+                "features": features,
+                "policy_score": 0.9,
+                "explored": False,
+            }
+
+        def update(self, decision, outcome):
+            updates.append((decision, outcome))
+            return {
+                "reward": 1.2,
+                "weights": {"risk_score": 0.4},
+                "epsilon": 0.09,
+                "threshold": 0.7,
+                "lower_threshold": 0.35,
+            }
+
+    monkeypatch.setattr(agent_loop.policy_engine, "PolicyEngine", lambda: StubPolicy())
+    monkeypatch.setattr(
+        agent_loop.predictor,
+        "detect_change_set",
+        lambda path: {"files": ["service.py"], "functions": []},
+    )
+    monkeypatch.setattr(
+        agent_loop.predictor,
+        "predict_failures",
+        lambda change_set, graph=None, memory=None: {
+            "predicted_tests": ["tests/test_service.py::test_normalize"],
+            "at_risk_modules": ["service.py"],
+            "risk_score": 0.91,
+            "confidence": 0.73,
+            "change_frequency": 2,
+            "failure_frequency": 3,
+            "dependency_centrality": 4,
+            "estimated_fix_cost": 0.3,
+            "estimated_failure_cost": 1.8,
+        },
+    )
+    monkeypatch.setattr(
+        agent_loop.patcher,
+        "generate_patch_candidates",
+        lambda failure, path, **kwargs: ["preemptive-patch"],
+    )
+    monkeypatch.setattr(
+        agent_loop.patcher,
+        "rank_patch_candidates",
+        lambda path, patches, failure, memory=None: [
+            {"patch": patches[0], "score": {"confidence": 0.92}}
+        ],
+    )
+    monkeypatch.setattr(agent_loop.patcher, "apply_patch", lambda path, patch: True)
+    monkeypatch.setattr(
+        agent_loop.test_runner,
+        "run_tests",
+        lambda path: {
+            "passed": True,
+            "output": "",
+            "errors": "",
+            "exit_code": 0,
+        },
+    )
+
+    assert agent_loop.run_agent(tmp_path) is True
+
+    assert updates
+    assert updates[0][0]["decision"] == agent_loop.decision_engine.ACT
+    assert updates[0][1]["actual_outcome"] == "SUCCESS"
+    output = capsys.readouterr().out
+    assert "PHASE8: reward=1.20 epsilon=0.09" in output
+    assert "cumulative_reward=1.20" in output
+
+
 def test_run_agent_stops_before_generation_when_pytest_collects_no_tests(
     monkeypatch, tmp_path, capsys
 ):
