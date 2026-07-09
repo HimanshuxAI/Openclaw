@@ -1,6 +1,8 @@
 import json
+import multiprocessing
 import os
 from pathlib import Path
+import time
 
 import pytest
 
@@ -57,6 +59,15 @@ def _record(name, **overrides):
     record = records[name].copy()
     record.update(overrides)
     return record
+
+
+def _append_strategy_after_start(root, run_id, start):
+    start.wait(timeout=10)
+    phase9.append_record(
+        "strategies",
+        _record("strategies", run_id=run_id),
+        root=root,
+    )
 
 
 @pytest.mark.parametrize("name", sorted(phase9.LOG_NAMES))
@@ -151,6 +162,39 @@ def test_phase9_append_uses_a_lock_unique_temp_and_keeps_sequential_appends(monk
     assert phase9.fcntl.LOCK_UN in lock_calls
 
 
+def test_phase9_lock_keeps_all_simultaneous_same_log_appends(monkeypatch):
+    context = multiprocessing.get_context("fork")
+    start = context.Event()
+    original_read_records = phase9._read_records
+
+    def delayed_read_records(name, path):
+        records = original_read_records(name, path)
+        time.sleep(0.05)
+        return records
+
+    monkeypatch.setattr(phase9, "_read_records", delayed_read_records)
+    processes = [
+        context.Process(
+            target=_append_strategy_after_start,
+            args=(str(_root()), f"run-{index}", start),
+        )
+        for index in range(4)
+    ]
+    for process in processes:
+        process.start()
+    start.set()
+    for process in processes:
+        process.join(timeout=10)
+
+    assert all(process.exitcode == 0 for process in processes)
+    assert {record["run_id"] for record in phase9.load_records("strategies")} == {
+        "run-0",
+        "run-1",
+        "run-2",
+        "run-3",
+    }
+
+
 @pytest.mark.parametrize("name", ["unknown", "", None, 3])
 def test_phase9_rejects_invalid_log_names(name):
     with pytest.raises(ValueError):
@@ -176,6 +220,16 @@ def test_phase9_rejects_invalid_log_names(name):
 def test_phase9_rejects_unknown_source_bearing_or_schema_invalid_records(name, record):
     with pytest.raises(ValueError, match="Invalid Phase 9 record"):
         phase9.append_record(name, record)
+
+
+@pytest.mark.parametrize("name", sorted(phase9.LOG_NAMES))
+def test_phase9_rejects_every_missing_required_field(name):
+    record = _record(name)
+    for field in tuple(record):
+        incomplete = record.copy()
+        del incomplete[field]
+        with pytest.raises(ValueError, match="Invalid Phase 9 record"):
+            phase9.append_record(name, incomplete)
 
 
 def test_phase9_rejects_cyclic_records_as_non_json():
